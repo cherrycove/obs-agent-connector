@@ -78,7 +78,7 @@ func TestUninstallDryRun(t *testing.T) {
 	for _, expected := range []string{
 		"Uninstall plan:",
 		"Binary         : " + executablePath,
-		"Built-in Agents: remove claude, codebuddy, codex, cursor, and kiro; remove managed config, logs, and state",
+		"Built-in Agents: remove claude, codebuddy, codex, cursor, dcode, and kiro; remove managed config, logs, and state",
 		"Config         : remove " + configPath,
 		"Shell PATH     : remove managed entry from " + zshrcPath,
 	} {
@@ -111,7 +111,7 @@ func TestUninstallRemovesAllBuiltInAdaptersAndManagedFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configRoot, "config.json"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, adapter := range []string{"claude", "codebuddy", "codex", "cursor", "kiro"} {
+	for _, adapter := range []string{"claude", "codebuddy", "codex", "cursor", "dcode", "kiro"} {
 		dir := filepath.Join(configRoot, adapter)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -129,6 +129,7 @@ func TestUninstallRemovesAllBuiltInAdaptersAndManagedFiles(t *testing.T) {
 		filepath.Join(home, ".codebuddy", "settings.json"):                `{"hooks":{"Stop":[{"hooks":[{"command":"/tmp/obs-agent-connector hook codebuddy"}]}],"SessionEnd":[]}}`,
 		filepath.Join(home, ".codex", "hooks.json"):                       `{"hooks":{"Stop":[{"hooks":[{"command":"/tmp/obs-agent-connector hook codex"}]}]}}`,
 		filepath.Join(home, ".cursor", "hooks.json"):                      `{"version":1,"hooks":{"stop":[{"command":"/tmp/obs-agent-connector hook cursor stop"}]}}`,
+		filepath.Join(home, ".deepagents", "hooks.json"):                  `{"hooks":{"Stop":[{"hooks":[{"command":"/tmp/obs-agent-connector hook dcode Stop"}]}]}}`,
 		filepath.Join(home, ".kiro", "hooks", "obs-agent-connector.json"): `{"version":"v1","hooks":[{"name":"managed","trigger":"Stop","action":{"type":"command","command":"/tmp/obs-agent-connector hook kiro Stop"}}]}`,
 	}
 	for path, body := range hookFiles {

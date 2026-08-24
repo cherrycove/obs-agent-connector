@@ -87,6 +87,25 @@ func installBuiltinAdapter(p agent.Definition, input installInput, noConfig bool
 			Enabled:               input.Enabled,
 			NoConfig:              noConfig,
 		})
+	case "dcode":
+		_, err = telemetryinstall.InstallDcode(telemetryinstall.DcodeOptions{
+			SourceExecutable:      executable,
+			DestinationExecutable: executable,
+			Endpoint:              input.Endpoint,
+			TracePath:             input.TracePath,
+			MetricsPath:           input.MetricsPath,
+			InstallType:           fixedType,
+			XToken:                input.XToken,
+			Headers:               append([]string{}, input.Headers...),
+			ResourceAttributes:    builtinResourceAttributes(input),
+			CaptureContent:        input.CaptureContent,
+			MaxChars:              input.MaxChars,
+			Enabled:               input.Enabled,
+			NoConfig:              noConfig,
+		})
+		if err == nil {
+			printSingleDetail("Note", "Start a new dcode session or run /reload to load the reconciled Hooks.")
+		}
 	case "kiro":
 		_, err = telemetryinstall.InstallKiro(telemetryinstall.KiroOptions{
 			SourceExecutable:      executable,

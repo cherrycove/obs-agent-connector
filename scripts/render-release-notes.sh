@@ -37,17 +37,23 @@ render_changes() {
   if [ -n "${previous}" ]; then
     changed_files="$(git -C "${ROOT_DIR}" diff --name-only "${previous}..${VERSION}")"
     kiro_release=false
+    dcode_release=false
+
+    if printf '%s\n' "${changed_files}" | grep -Eq '(^|/)dcode([^/]*|/.*)$'; then
+      append_line "- Added built-in Deep Agents Code discovery, Hooks v2 lifecycle management, transcript replay telemetry, and persistent signal-level retry."
+      dcode_release=true
+    fi
 
     if printf '%s\n' "${changed_files}" | grep -Eq '(^|/)kiro([^/]*|/.*)$'; then
       append_line "- Added built-in Kiro CLI v3 discovery, lifecycle management, hooks, session replay telemetry, and persistent retry."
       kiro_release=true
     fi
 
-    if [ "${kiro_release}" != "true" ] && printf '%s\n' "${changed_files}" | grep -Eq '^(cmd/|internal/app/|internal/agent/|main\.go|main_test\.go)'; then
+    if [ "${kiro_release}" != "true" ] && [ "${dcode_release}" != "true" ] && printf '%s\n' "${changed_files}" | grep -Eq '^(cmd/|internal/app/|internal/agent/|main\.go|main_test\.go)'; then
       append_line "- Reorganized the CLI into cmd/ and internal/ packages, with separate app and Agent modules."
     fi
 
-    if [ "${kiro_release}" != "true" ] && printf '%s\n' "${changed_files}" | grep -Eq '^(internal/app/command_discover\.go|internal/app/command_install\.go|internal/app/command_update\.go|internal/app/installer\.go|internal/agent/(definition|registry|codex|openclaw|qoder)\.go)'; then
+    if [ "${kiro_release}" != "true" ] && [ "${dcode_release}" != "true" ] && printf '%s\n' "${changed_files}" | grep -Eq '^(internal/app/command_discover\.go|internal/app/command_install\.go|internal/app/command_update\.go|internal/app/installer\.go|internal/agent/(definition|registry|codex|openclaw|qoder)\.go)'; then
       append_line "- Improved installation and update flows, including Windows-specific plugin installer routing for supported Agents."
     fi
 

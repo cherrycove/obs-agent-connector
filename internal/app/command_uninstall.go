@@ -52,7 +52,7 @@ func uninstallConnector(args []string) error {
 	if *keepConfig {
 		managedFilesMode = "keep managed config; remove Hooks, logs, and state"
 	}
-	rows = append(rows, [2]string{"Built-in Agents", "remove claude, codebuddy, codex, cursor, and kiro; " + managedFilesMode})
+	rows = append(rows, [2]string{"Built-in Agents", "remove claude, codebuddy, codex, cursor, dcode, and kiro; " + managedFilesMode})
 	if *keepConfig {
 		rows = append(rows, [2]string{"Config", "keep " + configPath})
 	} else {
@@ -85,7 +85,7 @@ func uninstallConnector(args []string) error {
 			return nil
 		}
 	}
-	for _, adapter := range []string{"claude", "codebuddy", "codex", "cursor", "kiro"} {
+	for _, adapter := range []string{"claude", "codebuddy", "codex", "cursor", "dcode", "kiro"} {
 		selected := agent.ResolveForRemove([]agent.Definition{agent.Get(adapter)})
 		if len(selected) == 0 {
 			continue

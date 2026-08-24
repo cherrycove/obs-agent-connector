@@ -49,6 +49,8 @@ func RemoveAdapter(adapter, home string, options RemoveOptions) (RemoveResult, e
 		result, err = removeCodex(home, options)
 	case "cursor":
 		result, err = removeCursor(home, options)
+	case "dcode":
+		result, err = removeDcode(home, options)
 	case "kiro":
 		result, err = removeKiro(home, options)
 	default:
@@ -64,6 +66,50 @@ func RemoveAdapter(adapter, home string, options RemoveOptions) (RemoveResult, e
 		}
 		result.ConfigRemoved = true
 		result.ManagedFilesRemoved = true
+	}
+	return result, nil
+}
+
+func removeDcode(home string, options RemoveOptions) (RemoveResult, error) {
+	result := RemoveResult{
+		Adapter:    "dcode",
+		HookFile:   filepath.Join(home, ".deepagents", "hooks.json"),
+		ConfigFile: agentfiles.ConfigPath(home, "dcode"),
+	}
+	value, exists, err := readJSONObjectIfExists(result.HookFile)
+	if err != nil {
+		return result, err
+	}
+	if exists {
+		hooks, _ := value["hooks"].(map[string]any)
+		for _, event := range dcodeHookEvents {
+			groups, _ := hooks[event].([]any)
+			next, changed := removeManagedDcodeHandlers(groups)
+			if changed {
+				hooks[event] = next
+				result.HookRemoved = true
+			}
+		}
+		if result.HookRemoved {
+			if err := writeJSONWatched(result.HookFile, value); err != nil {
+				return result, err
+			}
+		}
+	}
+	if options.PurgeConfig {
+		if err := removeConfigFiles(result.ConfigFile, filepath.Join(home, ".deepagents", "gtrace.json")); err != nil {
+			return result, err
+		}
+		result.ConfigRemoved = true
+	}
+	if options.PurgeState {
+		if err := os.RemoveAll(filepath.Join(agentfiles.Directory(home, "dcode"), "state")); err != nil {
+			return result, err
+		}
+		if err := removeFileIfExists(agentfiles.HookLogPath(home, "dcode")); err != nil {
+			return result, err
+		}
+		result.StatePurged = true
 	}
 	return result, nil
 }

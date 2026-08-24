@@ -10,6 +10,7 @@ Supported Agents:
 - `codebuddy`
 - `codex`
 - `cursor`
+- `dcode`
 - `dsh`
 - `hermes`
 - `kiro`
@@ -21,7 +22,7 @@ Supported Agents:
 Notes:
 
 - `qoder` automatically detects global vs CN layouts
-- Windows currently supports `claude`, `codebuddy`, `codex`, `cursor`, `dsh`, `kiro`, `opencode`, `openclaw`, `qoder`, and `workbuddy`
+- Windows currently supports `claude`, `codebuddy`, `codex`, `cursor`, `dcode`, `dsh`, `kiro`, `opencode`, `openclaw`, `qoder`, and `workbuddy`
 
 ## Install obs-agent-connector
 
@@ -157,6 +158,7 @@ obs-agent-connector discover -u
 obs-agent-connector install codex
 obs-agent-connector install codebuddy
 obs-agent-connector install cursor
+obs-agent-connector install dcode
 obs-agent-connector config codex list
 obs-agent-connector config codex edit --enabled=false --endpoint=https://llm-openway.truewatch.com
 obs-agent-connector install opencode
@@ -188,7 +190,7 @@ The output includes:
 
 If the version cannot be derived from the local layout or plugin manifest, the version column shows `-`.
 
-Claude, CodeBuddy, Codex, Cursor, and Kiro use built-in runtimes. Other Agents use their external plugins.
+Claude, CodeBuddy, Codex, Cursor, Deep Agents Code, and Kiro use built-in runtimes. Other Agents use their external plugins.
 
 ## `status`
 
@@ -245,7 +247,7 @@ Notes:
 - `list` prints the current managed `gtrace.json` values
 - `edit` merges the supplied values into the existing config and rewrites the file
 - built-in adapters write `~/.obs-agent-connector/<agent>/gtrace.json`; an existing Agent-local config is used as the migration source when necessary
-- supported Agents: `claude`, `codebuddy`, `codex`, `cursor`, `kiro`, `opencode`, `qoder`, and `workbuddy`
+- supported Agents: `claude`, `codebuddy`, `codex`, `cursor`, `dcode`, `kiro`, `opencode`, `qoder`, and `workbuddy`
 - `hermes` and `openclaw` are not supported by this command
 
 ## `discover`
@@ -296,6 +298,7 @@ obs-agent-connector discover --update
 - only includes `qoder` when `~/.qoder` or `~/.qoder-cn` already exists
 - includes `cursor` when `~/.cursor` already exists, even if the Cursor CLI is not in `PATH`
 - prefers `cursor-agent` when multiple compatible Cursor CLI binaries are present
+- includes `dcode` when the Dcode command is available or `~/.deepagents` already exists
 - also includes `opencode` when `~/.config/opencode` already exists, even if `opencode` is not in `PATH`
 - only includes `workbuddy` when the WorkBuddy profile directory already exists, for example `~/.workbuddy`
 
@@ -327,7 +330,7 @@ Parameters:
 Behavior:
 
 - removes the current connector binary
-- removes the managed Claude, CodeBuddy, Codex, Cursor, and Kiro adapters and compatible legacy plugin residue where applicable
+- removes the managed Claude, CodeBuddy, Codex, Cursor, Deep Agents Code, and Kiro adapters and compatible legacy plugin residue where applicable
 - removes connector-managed per-Agent config, Hook logs, and upload state by default
 - removes the global connector config by default
 - with `--keep-config`, preserves global and per-Agent config while still removing Hooks, logs, and upload state
@@ -341,6 +344,7 @@ Install a single Agent plugin:
 ```bash
 obs-agent-connector install codex
 obs-agent-connector install cursor
+obs-agent-connector install dcode
 obs-agent-connector install kiro
 ```
 
@@ -351,6 +355,7 @@ obs-agent-connector install claude
 obs-agent-connector install codebuddy
 obs-agent-connector install codex
 obs-agent-connector install cursor
+obs-agent-connector install dcode
 obs-agent-connector install kiro
 ```
 
@@ -392,6 +397,7 @@ Notes:
 - Claude installation replaces legacy `claude-otel-plugin` Hook entries and preserves unrelated `Stop` and `SessionEnd` Hooks
 - CodeBuddy installation replaces legacy `codebuddy-hook` entries and preserves unrelated `Stop` and `SessionEnd` Hooks
 - Codex installation replaces legacy `codex-otel-plugin` Hook entries, updates managed Stop Hooks, and preserves unrelated Hook entries
+- Dcode installation manages Hooks v2 in `~/.deepagents/hooks.json` and preserves unrelated Hook groups and handlers; start a new session or run `/reload` after installation
 - Kiro installation manages `~/.kiro/hooks/obs-agent-connector.json` for the v3 Agent engine and preserves unrelated entries in that file
 - existing runtime configuration and upload state are preserved unless explicitly changed or purged
 
@@ -415,7 +421,7 @@ Notes:
 
 - `update` accepts a single Agent target only
 - the command preserves the existing runtime config
-- the built-in Claude, CodeBuddy, Codex, Cursor, and Kiro adapters reconcile their Hooks without modifying `~/.obs-agent-connector/<agent>/gtrace.json`
+- the built-in Claude, CodeBuddy, Codex, Cursor, Deep Agents Code, and Kiro adapters reconcile their Hooks without modifying `~/.obs-agent-connector/<agent>/gtrace.json`
 - external plugin installers receive `--no-config`
 
 ## `enable` / `disable`
@@ -445,6 +451,9 @@ Notes:
   - `claude`
   - `codebuddy`
   - `codex`
+  - `cursor`
+  - `dcode`
+  - `kiro`
   - `qoder`
   - `openclaw`
 - `hermes` is not supported because its runtime config is YAML, not the JSON `enabled` structure handled by this CLI
@@ -477,6 +486,7 @@ Notes:
 - legacy Agent-local and external plugin configuration is kept unless `--purge-config` is supplied
 - `remove` accepts a single Agent target only
 - `remove claude` and `remove codebuddy` preserve unrelated entries in their settings files
+- `remove dcode` removes connector-owned handlers from `~/.deepagents/hooks.json` and preserves unrelated Hook groups and handlers
 - `remove kiro` removes connector-owned entries from `~/.kiro/hooks/obs-agent-connector.json` and preserves unrelated entries
 - `remove codex` removes connector-owned Codex Hooks and trust state and also attempts to clean legacy `codex-otel-plugin` residue without blocking removal on legacy cleanup failures
 
@@ -522,6 +532,8 @@ Supported Agents on Windows:
 - `codebuddy`
 - `codex`
 - `cursor`
+- `dcode`
+- `kiro`
 - `opencode`
 - `openclaw`
 - `qoder`

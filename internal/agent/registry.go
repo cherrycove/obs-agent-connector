@@ -12,6 +12,7 @@ var definitions = map[string]Definition{
 	"codebuddy": codeBuddyPlugin(),
 	"codex":     codexPlugin(),
 	"cursor":    cursorPlugin(),
+	"dcode":     dcodePlugin(),
 	"dsh":       dshPlugin(),
 	"hermes":    hermesPlugin(),
 	"kiro":      kiroPlugin(),

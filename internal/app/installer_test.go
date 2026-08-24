@@ -384,7 +384,7 @@ func TestUnsupportedPlatformErrorForWindows(t *testing.T) {
 	if !strings.Contains(message, "hermes is not supported on Windows") {
 		t.Fatalf("unexpected error message %q", message)
 	}
-	if !strings.Contains(message, "codex, cursor, dsh, kiro, openclaw, opencode, qoder, workbuddy") {
+	if !strings.Contains(message, "codex, cursor, dcode, dsh, kiro, openclaw, opencode, qoder, workbuddy") {
 		t.Fatalf("expected supported Windows agent list in %q", message)
 	}
 }

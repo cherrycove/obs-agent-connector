@@ -82,6 +82,7 @@ Examples:
   obs-agent-connector status codex
   obs-agent-connector install codex
   obs-agent-connector install codebuddy
+  obs-agent-connector install dcode
   obs-agent-connector install dsh
   obs-agent-connector install cursor
   obs-agent-connector install kiro
