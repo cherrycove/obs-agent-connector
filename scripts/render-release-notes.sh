@@ -45,7 +45,11 @@ render_changes() {
     fi
 
     if printf '%s\n' "${changed_files}" | grep -Eq '(^|/)kiro([^/]*|/.*)$'; then
-      append_line "- Added built-in Kiro CLI v3 discovery, lifecycle management, hooks, session replay telemetry, and persistent retry."
+      if git -C "${ROOT_DIR}" cat-file -e "${previous}:internal/adapters/kiro" 2>/dev/null; then
+        append_line "- Fixed Kiro CLI 2.19.1 telemetry replay with exact session matching, modern workspace-bucketed session support, and legacy v3 compatibility."
+      else
+        append_line "- Added built-in Kiro CLI discovery, lifecycle management, hooks, session replay telemetry, and persistent retry."
+      fi
       kiro_release=true
     fi
 
@@ -62,7 +66,7 @@ render_changes() {
     fi
 
     if printf '%s\n' "${changed_files}" | grep -Eq '^(README\.md|docs/|AGENTS\.md|\.github/workflows/|scripts/build-release\.sh)'; then
-      append_line "- Updated documentation, CI, and release packaging to match the new command set and project layout."
+      append_line "- Updated documentation and release metadata."
     fi
 
     if [ -n "${NOTES}" ]; then

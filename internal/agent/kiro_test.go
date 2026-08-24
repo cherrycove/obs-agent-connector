@@ -23,6 +23,20 @@ func TestKiroInstallRequiresCommandOrDataDirectory(t *testing.T) {
 	}
 }
 
+func TestKiroInstallRecognizesModernSessionIndex(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("KIRO_CLI_BINARY", "")
+	t.Setenv("KIRO_CLI_PATH", "")
+	if err := os.MkdirAll(filepath.Join(home, ".kiro", "session-index"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveKiroForInstall(definitions["kiro"]); err != nil {
+		t.Fatalf("expected modern Kiro data directory fallback: %v", err)
+	}
+}
+
 func TestKiroDiscoveryUsesResolvedCommand(t *testing.T) {
 	home := t.TempDir()
 	binDir := t.TempDir()

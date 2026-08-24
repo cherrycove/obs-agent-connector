@@ -113,6 +113,44 @@ func TestProcessQueueRetriesOnlyFailedMetricsSignal(t *testing.T) {
 	}
 }
 
+func TestProcessQueueUploadsModernKiroTurn(t *testing.T) {
+	var mu sync.Mutex
+	requests := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		mu.Lock()
+		requests[request.URL.Path]++
+		mu.Unlock()
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	cfg := testConfig(t, server.URL)
+	writeModernHookSession(t, cfg.SessionDir, "sess_modern", "hello", "world")
+	payloads := []struct {
+		event   string
+		payload map[string]any
+	}{
+		{"UserPromptSubmit", map[string]any{"session_id": "sess_modern", "cwd": "/workspace", "prompt": "hello"}},
+		{"Stop", map[string]any{"session_id": "sess_modern", "cwd": "/workspace"}},
+	}
+	for _, item := range payloads {
+		if err := RecordEvent(item.event, item.payload, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queuePath, err := enqueueStop(payloads[1].payload, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ProcessQueue(queuePath, RunOptions{Config: &cfg, HTTPClient: server.Client(), SkipWait: true}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests["/v1/traces"] != 1 || requests["/v1/metrics"] != 1 {
+		t.Fatalf("unexpected modern Kiro upload requests: %#v", requests)
+	}
+}
+
 func TestPayloadForStorageHonorsCaptureModeAndRedactsSecrets(t *testing.T) {
 	payload := map[string]any{
 		"session_id": "session-3", "cwd": "/workspace", "prompt": "secret prompt",
@@ -168,6 +206,39 @@ func writeSession(t *testing.T, sessionDir, sessionID, cwd, prompt, response str
 		{"kind": "AssistantMessage", "data": map[string]any{"message_id": "message-1", "content": []any{map[string]any{"kind": "text", "data": response}}}},
 	} {
 		if err := encoder.Encode(value); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeModernHookSession(t *testing.T, sessionRoot, sessionID, prompt, response string) {
+	t.Helper()
+	directory := filepath.Join(sessionRoot, "workspace-hash", sessionID)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now().UTC().Add(-3 * time.Second)
+	writeJSONFile(t, filepath.Join(directory, "session.json"), map[string]any{
+		"id": sessionID, "modelId": "auto", "status": "idle", "workspacePaths": []any{"/workspace"},
+	})
+	file, err := os.Create(filepath.Join(directory, "messages.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder := json.NewEncoder(file)
+	records := []map[string]any{
+		{"id": "user", "timestamp": start.Format(time.RFC3339Nano), "payload": map[string]any{"type": "user", "content": prompt}},
+		{"id": "start", "timestamp": start.Add(time.Second).Format(time.RFC3339Nano), "payload": map[string]any{"type": "turn_start", "executionId": "execution-modern"}},
+		{"id": "say", "timestamp": start.Add(2 * time.Second).Format(time.RFC3339Nano), "payload": map[string]any{"type": "assistant", "executionId": "execution-modern", "operationType": "Say", "content": response}},
+		{"id": "usage", "timestamp": start.Add(2500 * time.Millisecond).Format(time.RFC3339Nano), "payload": map[string]any{"type": "usage_summary", "executionId": "execution-modern", "status": "success", "requestIds": []any{"request-modern"}}},
+		{"id": "end", "timestamp": start.Add(3 * time.Second).Format(time.RFC3339Nano), "payload": map[string]any{"type": "turn_end", "executionId": "execution-modern", "stopReason": "end_turn"}},
+	}
+	for _, record := range records {
+		if err := encoder.Encode(record); err != nil {
 			_ = file.Close()
 			t.Fatal(err)
 		}

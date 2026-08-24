@@ -31,10 +31,10 @@ func resolveKiroForInstall(p Definition) (Definition, error) {
 		p.AgentCommand = command
 		return p, nil
 	}
-	if PathExists(ExpandHome("~/.kiro/sessions/cli")) {
+	if kiroDataExists() {
 		return p, nil
 	}
-	return Definition{}, fmt.Errorf("kiro CLI was not found; start a Kiro CLI v3 session before installing its adapter")
+	return Definition{}, fmt.Errorf("kiro CLI was not found; start a Kiro CLI session before installing its adapter")
 }
 
 func resolveKiroForDiscovery(p Definition) (Definition, bool) {
@@ -42,10 +42,15 @@ func resolveKiroForDiscovery(p Definition) (Definition, bool) {
 		p.AgentCommand = command
 		return p, true
 	}
-	if PathExists(ExpandHome("~/.kiro/sessions/cli")) {
+	if kiroDataExists() {
 		return p, true
 	}
 	return Definition{}, false
+}
+
+func kiroDataExists() bool {
+	return PathExists(ExpandHome("~/.kiro/session-index")) ||
+		PathExists(ExpandHome("~/.kiro/sessions/cli"))
 }
 
 func resolveKiroCommandPath() (string, bool) {

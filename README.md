@@ -32,7 +32,7 @@ The tool provides one binary and one version for connector lifecycle operations 
 | `codex` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | Stop Hook adapter plus built-in Codex trust/config handling |
 | `cursor` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | Detects `~/.cursor`, prefers `cursor-agent`, and manages user-level Cursor Hooks |
 | `dcode` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | Deep Agents Code Hooks v2 plus transcript replay; requires `dcode` 0.1.46 or later |
-| `kiro` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | Kiro v3 Hooks plus `~/.kiro/sessions/cli` terminal replay |
+| `kiro` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | Kiro Hooks plus modern and legacy terminal session replay |
 | `dsh` | `dsh-otel-plugin` | `✅` | `✅` | `✅` | DeepSeek Harness profile bundle |
 | `hermes` | `hermes-otel-plugin` | `✅` | `✅` | `❌` | Hermes plugin |
 | `opencode` | `opencode-otel-plugin` | `✅` | `✅` | `✅` | Uses the OpenCode config directory under `~/.config/opencode` |
@@ -134,7 +134,7 @@ OpenCode is discovered when the `opencode` command is in `PATH` or when `~/.conf
 Cursor is discovered when `~/.cursor` already exists, or when the Cursor CLI family is available in `PATH`. `cursor-agent` is preferred when multiple compatible Cursor binaries are present.
 Dcode is discovered when `dcode` or `deepagents-code` is available in `PATH`, or when `~/.deepagents` already exists. The built-in adapter requires Hooks v2 from Dcode 0.1.46 or later; start a new session or run `/reload` after installation.
 WorkBuddy is considered installed only when its profile directory already exists, for example `~/.workbuddy`.
-Kiro is discovered from `kiro-cli` or an existing `~/.kiro/sessions/cli` terminal session store. The built-in adapter targets the v3 Agent engine and does not instrument legacy v1/v2 sessions.
+Kiro is discovered from `kiro-cli`, the modern `~/.kiro/session-index` store, or the legacy `~/.kiro/sessions/cli` store. The built-in adapter reads modern workspace-bucketed sessions under `~/.kiro/sessions` and remains compatible with legacy v3 terminal sessions.
 DSH is discovered when the `dsh` command is in `PATH` or when `~/.dsh` exists. The connector installs the bundle into the `web` profile by default and honors `DSH_HOME` and `DSH_PROFILE` when set. DSH runtime configuration is generated and merged by `dsh-otel-plugin`; the connector only supplies the standard installer arguments.
 `enable <agent>` and `disable <agent>` update the plugin runtime `enabled` switch in its JSON config file. `hermes` is excluded because its runtime config is YAML.
 `config` currently supports the managed `gtrace.json` layout used by `claude`, `codebuddy`, `codex`, `cursor`, `dcode`, `kiro`, `opencode`, `qoder`, and `workbuddy`. `hermes` and `openclaw` are excluded.

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -56,17 +55,25 @@ type rawTurn struct {
 }
 
 type sessionCandidate struct {
-	Sidecar map[string]any
-	ID      string
-	Updated int64
+	Sidecar   map[string]any
+	ID        string
+	JSONLPath string
+	Updated   int64
 }
 
 func ReadLatestTurn(options Options) (model.Turn, bool, error) {
-	candidate, err := findSession(options.SessionDir, options.SessionID, options.Cwd)
+	modern, found, err := findModernSession(options.SessionDir, options.SessionID)
 	if err != nil {
 		return model.Turn{}, false, err
 	}
-	turns, err := readSessionLines(filepath.Join(options.SessionDir, candidate.ID+".jsonl"))
+	if found {
+		return readModernTurn(modern, options)
+	}
+	candidate, err := findSession(options.SessionDir, options.SessionID)
+	if err != nil {
+		return model.Turn{}, false, err
+	}
+	turns, err := readSessionLines(candidate.JSONLPath)
 	if err != nil {
 		return model.Turn{}, false, err
 	}
@@ -106,46 +113,40 @@ func ReadLatestTurn(options Options) (model.Turn, bool, error) {
 	return turn, true, nil
 }
 
-func findSession(sessionDir, sessionID, cwd string) (sessionCandidate, error) {
+func findSession(sessionDir, sessionID string) (sessionCandidate, error) {
 	if strings.TrimSpace(sessionDir) == "" {
 		return sessionCandidate{}, errors.New("Kiro session directory is empty")
 	}
-	if safeID(sessionID) {
-		path := filepath.Join(sessionDir, sessionID+".json")
-		if value, err := readObject(path); err == nil {
-			if _, statErr := os.Stat(filepath.Join(sessionDir, sessionID+".jsonl")); statErr == nil {
-				return sessionCandidate{Sidecar: value, ID: sessionID, Updated: parseTime(value["updated_at"])}, nil
-			}
-		}
-	}
-	entries, err := os.ReadDir(sessionDir)
-	if err != nil {
-		return sessionCandidate{}, err
-	}
-	candidates := make([]sessionCandidate, 0)
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		value, readErr := readObject(filepath.Join(sessionDir, name))
-		if readErr != nil || (cwd != "" && stringValue(value, "cwd") != cwd) {
-			continue
-		}
-		id := stringValue(value, "session_id")
-		if !safeID(id) {
-			continue
-		}
-		if _, statErr := os.Stat(filepath.Join(sessionDir, id+".jsonl")); statErr != nil {
-			continue
-		}
-		candidates = append(candidates, sessionCandidate{Sidecar: value, ID: id, Updated: parseTime(value["updated_at"])})
-	}
-	if len(candidates) == 0 {
+	if !safeID(sessionID) {
 		return sessionCandidate{}, os.ErrNotExist
 	}
-	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].Updated > candidates[j].Updated })
-	return candidates[0], nil
+	for _, directory := range legacySessionDirs(sessionDir) {
+		sidecarPath := filepath.Join(directory, sessionID+".json")
+		jsonlPath := filepath.Join(directory, sessionID+".jsonl")
+		value, err := readObject(sidecarPath)
+		if err != nil {
+			continue
+		}
+		if storedID := stringValue(value, "session_id"); storedID != "" && storedID != sessionID {
+			continue
+		}
+		if _, err := os.Stat(jsonlPath); err != nil {
+			continue
+		}
+		return sessionCandidate{
+			Sidecar: value, ID: sessionID, JSONLPath: jsonlPath,
+			Updated: parseTime(value["updated_at"]),
+		}, nil
+	}
+	return sessionCandidate{}, os.ErrNotExist
+}
+
+func legacySessionDirs(sessionDir string) []string {
+	directories := []string{filepath.Clean(sessionDir)}
+	if filepath.Base(filepath.Clean(sessionDir)) != "cli" {
+		directories = append(directories, filepath.Join(sessionDir, "cli"))
+	}
+	return directories
 }
 
 func readSessionLines(path string) ([]rawTurn, error) {

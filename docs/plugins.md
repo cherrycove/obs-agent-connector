@@ -11,7 +11,7 @@
 | `codex` | Codex | Current connector | `~/.obs-agent-connector/codex/gtrace.json` | Managed Hook and trust state in `~/.codex/hooks.json` / `~/.codex/config.toml` |
 | `cursor` | Cursor with automatic `~/.cursor` or Cursor CLI-family detection, preferring `cursor-agent` | Current connector | `~/.obs-agent-connector/cursor/gtrace.json` | Managed Hooks in `~/.cursor/hooks.json` |
 | `dcode` | Deep Agents Code with Hooks v2 (`dcode` 0.1.46 or later) | Current connector | `~/.obs-agent-connector/dcode/gtrace.json` | Managed Hooks in `~/.deepagents/hooks.json` |
-| `kiro` | Kiro CLI v3 Agent engine | Current connector | `~/.obs-agent-connector/kiro/gtrace.json` | Managed v3 Hooks in `~/.kiro/hooks/obs-agent-connector.json` |
+| `kiro` | Kiro CLI terminal agent | Current connector | `~/.obs-agent-connector/kiro/gtrace.json` | Managed Hooks in `~/.kiro/hooks/obs-agent-connector.json` |
 | `dsh` | DeepSeek Harness | Unix: `https://static.guance.com/agent_plugins/dsh-otel-plugin/install.sh` Windows: `https://static.guance.com/agent_plugins/dsh-otel-plugin/install-release.ps1` | `$DSH_HOME/gtrace.json` (default `~/.dsh/gtrace.json`) | `$DSH_HOME/profiles/<profile>/node_modules/dsh-otel-plugin` |
 | `hermes` | Hermes | `https://static.guance.com/agent_plugins/hermes-otel-plugin/install.sh` | `~/.hermes/config.yaml` | `~/.hermes/plugins/hermes-otel-plugin` |
 | `opencode` | OpenCode with automatic config-directory detection | Unix: `https://static.guance.com/agent_plugins/opencode-otel-plugin/opencode-otel-plugin.tar.gz`  Windows: `https://static.guance.com/agent_plugins/opencode-otel-plugin/install-release.ps1` | `~/.config/opencode/gtrace.json` | `~/.config/opencode/plugins/opencode-otel-plugin` |

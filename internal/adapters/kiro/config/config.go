@@ -88,7 +88,7 @@ func Resolve(options ResolveOptions) Config {
 	}
 	sessionDir := expandPath(firstString(merged, "sessionDir", "session_dir"), home)
 	if sessionDir == "" {
-		sessionDir = filepath.Join(home, ".kiro", "sessions", "cli")
+		sessionDir = filepath.Join(home, ".kiro", "sessions")
 	}
 	return Config{
 		Enabled: enabled,

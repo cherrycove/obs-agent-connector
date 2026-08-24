@@ -398,7 +398,7 @@ Notes:
 - CodeBuddy installation replaces legacy `codebuddy-hook` entries and preserves unrelated `Stop` and `SessionEnd` Hooks
 - Codex installation replaces legacy `codex-otel-plugin` Hook entries, updates managed Stop Hooks, and preserves unrelated Hook entries
 - Dcode installation manages Hooks v2 in `~/.deepagents/hooks.json` and preserves unrelated Hook groups and handlers; start a new session or run `/reload` after installation
-- Kiro installation manages `~/.kiro/hooks/obs-agent-connector.json` for the v3 Agent engine and preserves unrelated entries in that file
+- Kiro installation manages `~/.kiro/hooks/obs-agent-connector.json`, preserves unrelated entries in that file, and replays the exact modern or legacy terminal session selected by the Hook session ID
 - existing runtime configuration and upload state are preserved unless explicitly changed or purged
 
 ## `update`

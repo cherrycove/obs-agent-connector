@@ -43,7 +43,7 @@ func TestResolveUsesManagedPaths(t *testing.T) {
 	if want := filepath.Join(managedDir, "gtrace-hooks.json"); cfg.LogFile != want {
 		t.Fatalf("LogFile = %q, want %q", cfg.LogFile, want)
 	}
-	if want := filepath.Join(home, ".kiro", "sessions", "cli"); cfg.SessionDir != want {
+	if want := filepath.Join(home, ".kiro", "sessions"); cfg.SessionDir != want {
 		t.Fatalf("SessionDir = %q, want %q", cfg.SessionDir, want)
 	}
 }

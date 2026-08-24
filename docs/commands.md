@@ -79,7 +79,7 @@ OpenCode is also detected when `~/.config/opencode` already exists, even if `ope
 CodeBuddy is detected when the `codebuddy` command is in `PATH` or `~/.codebuddy` exists.
 Cursor is detected when `~/.cursor` already exists, or when the Cursor CLI family is available in `PATH`. `cursor-agent` is preferred when multiple compatible Cursor binaries are present.
 Dcode is detected when `dcode` or `deepagents-code` is available in `PATH`, or when `~/.deepagents` already exists. Telemetry collection requires Hooks v2 from Dcode 0.1.46 or later.
-Kiro is detected when `kiro-cli` is available or `~/.kiro/sessions/cli` already exists. Telemetry collection requires the Kiro v3 Agent engine and its global Hook format.
+Kiro is detected when `kiro-cli` is available, `~/.kiro/session-index` exists, or the legacy `~/.kiro/sessions/cli` store exists. Telemetry collection combines global Hooks with exact-session replay from the modern workspace-bucketed store or the legacy v3 store.
 Missing or invalid connector defaults are reported as `discover failed` errors.
 
 ## Status
