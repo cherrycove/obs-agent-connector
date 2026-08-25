@@ -171,7 +171,7 @@ GitHub Actions:
 - `Package` runs manually and uploads packaged artifacts as a workflow artifact.
 - `Release` runs on tags matching `v*`, reuses the `Package` workflow, and publishes the same artifacts to GitHub Releases. RC tags are pre-releases; the final release note consolidates the RC changes.
 
-The current stable release is [v0.1.21](https://github.com/GuanceCloud/obs-agent-connector/releases/tag/v0.1.21).
+The current stable release is [v0.1.22](https://github.com/GuanceCloud/obs-agent-connector/releases/tag/v0.1.22).
 
 ## Project Layout
 
