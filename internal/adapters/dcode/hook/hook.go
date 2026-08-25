@@ -77,8 +77,11 @@ func RunCLI(args []string) int {
 	}
 	executable, err := os.Executable()
 	if err == nil {
-		if strings.EqualFold(event, "Stop") {
+		switch {
+		case strings.EqualFold(event, "Stop"):
 			_, err = enqueueStop(payload, cfg)
+		case strings.EqualFold(event, "SessionEnd"):
+			_, err = enqueueSessionEnd(payload, cfg)
 		}
 		if err == nil {
 			err = startPendingWorkers(executable, cfg)
@@ -138,6 +141,33 @@ func enqueueStop(payload map[string]any, cfg dcodeconfig.Config) (string, error)
 	if err != nil {
 		return "", err
 	}
+	return enqueueTerminal(storedPayload, events, cfg)
+}
+
+func enqueueSessionEnd(payload map[string]any, cfg dcodeconfig.Config) (string, error) {
+	storedPayload := payloadForStorage(payload, cfg)
+	sessionID := stringValue(storedPayload, "session_id", "sessionId")
+	if sessionID == "" {
+		return "", errors.New("dcode SessionEnd payload is missing session_id")
+	}
+	if !strings.EqualFold(stringValue(storedPayload, "reason"), "other") {
+		return "", nil
+	}
+	if stringValue(storedPayload, "transcript_path", "transcriptPath") == "" {
+		return "", errors.New("dcode SessionEnd payload is missing transcript_path")
+	}
+	events, err := readJournal(journalPath(cfg.StateDir, sessionID))
+	if err != nil {
+		return "", err
+	}
+	if journalHasEvent(events, "Stop") || !journalHasEvent(events, "UserPromptSubmit") {
+		return "", nil
+	}
+	return enqueueTerminal(storedPayload, events, cfg)
+}
+
+func enqueueTerminal(storedPayload map[string]any, events []dcodeparse.JournalEvent, cfg dcodeconfig.Config) (string, error) {
+	sessionID := stringValue(storedPayload, "session_id", "sessionId")
 	queueDir := filepath.Join(cfg.StateDir, "queue")
 	if err := os.MkdirAll(queueDir, 0o700); err != nil {
 		return "", err
@@ -159,7 +189,7 @@ func enqueueStop(payload map[string]any, cfg dcodeconfig.Config) (string, error)
 	}
 	queued := queuedTurn{
 		SessionID: sessionID, TurnID: stringValue(storedPayload, "prompt_id", "promptId"),
-		Cwd: stringValue(storedPayload, "cwd"), TranscriptPath: transcriptPath,
+		Cwd: stringValue(storedPayload, "cwd"), TranscriptPath: stringValue(storedPayload, "transcript_path", "transcriptPath"),
 		LastAssistant: stringValue(storedPayload, "last_assistant_message", "lastAssistantMessage"),
 		AgentVersion:  stringValue(storedPayload, "version", "dcode_version"), Events: events,
 	}
@@ -172,6 +202,15 @@ func enqueueStop(payload map[string]any, cfg dcodeconfig.Config) (string, error)
 	}
 	remove = false
 	return path, nil
+}
+
+func journalHasEvent(events []dcodeparse.JournalEvent, name string) bool {
+	for _, event := range events {
+		if strings.EqualFold(event.Event, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func startPendingWorkers(executable string, cfg dcodeconfig.Config) error {
@@ -314,7 +353,7 @@ func payloadForStorage(payload map[string]any, cfg dcodeconfig.Config) map[strin
 		"hook_event_name", "hookEventName", "session_id", "sessionId", "prompt_id", "promptId", "cwd",
 		"transcript_path", "transcriptPath", "tool_name", "toolName", "tool_use_id", "toolUseId",
 		"agent_id", "agentId", "agent_type", "agentType", "duration_ms", "durationMs",
-		"is_interrupt", "isInterrupt", "version", "dcode_version",
+		"is_interrupt", "isInterrupt", "version", "dcode_version", "reason",
 	}
 	contentKeys := []string{"prompt", "last_assistant_message", "lastAssistantMessage", "tool_input", "toolInput", "tool_response", "toolResponse", "error"}
 	out := map[string]any{}

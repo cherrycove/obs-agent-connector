@@ -139,6 +139,25 @@ func TestBuildSkipsUnsetAndBlankTurns(t *testing.T) {
 	}
 }
 
+func TestBuildKeepsExplicitTerminalErrorWithoutContent(t *testing.T) {
+	now := time.Now().UnixNano()
+	spans := (Builder{}).Build(model.Turn{
+		SessionID:     "session-error",
+		TurnID:        "turn-error",
+		StartUnixNano: now,
+		EndUnixNano:   now + int64(time.Second),
+		FinalStatus:   model.FinalStatusCompleted,
+		ErrorType:     "dcode_agent_error",
+		Reason:        "Dcode ended the session before emitting Stop",
+	})
+	if len(spans) != 1 || spans[0].Name != "invoke_agent" {
+		t.Fatalf("explicit terminal error must build only the root span: %#v", spans)
+	}
+	if spans[0].Status.Code != "STATUS_CODE_ERROR" || spans[0].Attributes["error.type"] != "dcode_agent_error" {
+		t.Fatalf("explicit terminal error status was not preserved: %#v", spans[0])
+	}
+}
+
 func findSpan(t *testing.T, spans []model.Span, name string) model.Span {
 	t.Helper()
 	for _, span := range spans {

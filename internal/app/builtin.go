@@ -105,6 +105,7 @@ func installBuiltinAdapter(p agent.Definition, input installInput, noConfig bool
 		})
 		if err == nil {
 			printSingleDetail("Note", "Start a new dcode session or run /reload to load the reconciled Hooks.")
+			printSingleDetail("Fallback", "Failed sessions are exported when Dcode emits SessionEnd with reason=other; provider error details remain unavailable.")
 		}
 	case "kiro":
 		_, err = telemetryinstall.InstallKiro(telemetryinstall.KiroOptions{
@@ -122,6 +123,9 @@ func installBuiltinAdapter(p agent.Definition, input installInput, noConfig bool
 			Enabled:               input.Enabled,
 			NoConfig:              noConfig,
 		})
+		if err == nil {
+			printSingleDetail("Scope", "Kiro telemetry requires an interactive V3 TTY session started with kiro-cli chat --v3; default V2 and --no-interactive sessions do not load global Hooks.")
+		}
 	default:
 		return fmt.Errorf("%s does not have a built-in telemetry adapter", p.Name)
 	}

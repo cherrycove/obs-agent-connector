@@ -163,6 +163,7 @@ func (b Builder) Build(turn model.Turn) []model.Span {
 func observable(turn model.Turn) bool {
 	return strings.TrimSpace(turn.InputPreview) != "" ||
 		strings.TrimSpace(turn.OutputPreview) != "" ||
+		strings.TrimSpace(turn.ErrorType) != "" ||
 		len(turn.LLMCalls) > 0 ||
 		len(turn.ToolCalls) > 0
 }

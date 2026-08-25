@@ -16,6 +16,7 @@ var dcodeHookEvents = []string{
 	"PostToolUse",
 	"PostToolUseFailure",
 	"Stop",
+	"SessionEnd",
 	"SubagentStart",
 	"SubagentStop",
 }

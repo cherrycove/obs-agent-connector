@@ -299,6 +299,8 @@ obs-agent-connector discover --update
 - includes `cursor` when `~/.cursor` already exists, even if the Cursor CLI is not in `PATH`
 - prefers `cursor-agent` when multiple compatible Cursor CLI binaries are present
 - includes `dcode` when the Dcode command is available or `~/.deepagents` already exists
+- Dcode normal turns use `Stop`; failed sessions use `SessionEnd(reason=other)` and omit unsupported provider error details, LLM spans, and usage data
+- Kiro telemetry requires `kiro-cli chat --v3` in an interactive TTY; default V2 and non-interactive modes do not load the managed global Hooks
 - also includes `opencode` when `~/.config/opencode` already exists, even if `opencode` is not in `PATH`
 - only includes `workbuddy` when the WorkBuddy profile directory already exists, for example `~/.workbuddy`
 
@@ -397,8 +399,8 @@ Notes:
 - Claude installation replaces legacy `claude-otel-plugin` Hook entries and preserves unrelated `Stop` and `SessionEnd` Hooks
 - CodeBuddy installation replaces legacy `codebuddy-hook` entries and preserves unrelated `Stop` and `SessionEnd` Hooks
 - Codex installation replaces legacy `codex-otel-plugin` Hook entries, updates managed Stop Hooks, and preserves unrelated Hook entries
-- Dcode installation manages Hooks v2 in `~/.deepagents/hooks.json` and preserves unrelated Hook groups and handlers; start a new session or run `/reload` after installation
-- Kiro installation manages `~/.kiro/hooks/obs-agent-connector.json`, preserves unrelated entries in that file, and replays the exact modern or legacy terminal session selected by the Hook session ID
+- Dcode installation manages Hooks v2 in `~/.deepagents/hooks.json` and preserves unrelated Hook groups and handlers; start a new session or run `/reload` after installation; failed sessions with `SessionEnd(reason=other)` produce an error root Trace without fabricated LLM or usage data
+- Kiro installation manages `~/.kiro/hooks/obs-agent-connector.json`, preserves unrelated entries in that file, and replays the exact modern or legacy terminal session selected by the Hook session ID; the supported launch mode is `kiro-cli chat --v3` in an interactive TTY
 - existing runtime configuration and upload state are preserved unless explicitly changed or purged
 
 ## `update`

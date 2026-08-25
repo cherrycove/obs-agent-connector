@@ -114,6 +114,85 @@ func TestProcessQueueRetriesOnlyFailedMetricsSignal(t *testing.T) {
 	}
 }
 
+func TestProcessQueueUploadsFailedSessionEndWithoutStop(t *testing.T) {
+	var mu sync.Mutex
+	requests := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		mu.Lock()
+		requests[request.URL.Path]++
+		mu.Unlock()
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	cfg := testConfig(t, server.URL)
+	cfg.CaptureContent = "none"
+	transcript := writeDcodeTranscript(t, "session-error", "hello", "")
+	user := map[string]any{
+		"session_id": "session-error", "prompt_id": "prompt-error", "cwd": "/workspace",
+		"transcript_path": transcript, "prompt": "hello",
+	}
+	terminal := map[string]any{
+		"session_id": "session-error", "prompt_id": "prompt-error", "cwd": "/workspace",
+		"transcript_path": transcript, "reason": "other",
+	}
+	for _, item := range []struct {
+		event   string
+		payload map[string]any
+	}{{"UserPromptSubmit", user}, {"SessionEnd", terminal}} {
+		if err := RecordEvent(item.event, item.payload, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queuePath, err := enqueueSessionEnd(terminal, cfg)
+	if err != nil || queuePath == "" {
+		t.Fatalf("failed SessionEnd was not queued: path=%q err=%v", queuePath, err)
+	}
+	if err := ProcessQueue(queuePath, RunOptions{Config: &cfg, HTTPClient: server.Client()}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests["/v1/traces"] != 1 || requests["/v1/metrics"] != 1 {
+		t.Fatalf("unexpected failed SessionEnd uploads: %#v", requests)
+	}
+}
+
+func TestSessionEndQueueRequiresFailureWithoutStop(t *testing.T) {
+	cfg := testConfig(t, "https://example.invalid")
+	transcript := writeDcodeTranscript(t, "session-terminal", "hello", "")
+	base := map[string]any{
+		"session_id": "session-terminal", "prompt_id": "prompt-terminal", "cwd": "/workspace",
+		"transcript_path": transcript, "prompt": "hello",
+	}
+	if err := RecordEvent("UserPromptSubmit", base, cfg); err != nil {
+		t.Fatal(err)
+	}
+	normal := map[string]any{
+		"session_id": "session-terminal", "prompt_id": "prompt-terminal", "cwd": "/workspace",
+		"transcript_path": transcript, "reason": "prompt_input_exit",
+	}
+	if path, err := enqueueSessionEnd(normal, cfg); err != nil || path != "" {
+		t.Fatalf("normal SessionEnd without Stop must not be queued: path=%q err=%v", path, err)
+	}
+	stop := map[string]any{
+		"session_id": "session-terminal", "prompt_id": "prompt-terminal", "cwd": "/workspace",
+		"transcript_path": transcript,
+	}
+	if err := RecordEvent("Stop", stop, cfg); err != nil {
+		t.Fatal(err)
+	}
+	failed := map[string]any{
+		"session_id": "session-terminal", "prompt_id": "prompt-terminal", "cwd": "/workspace",
+		"transcript_path": transcript, "reason": "other",
+	}
+	if err := RecordEvent("SessionEnd", failed, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if path, err := enqueueSessionEnd(failed, cfg); err != nil || path != "" {
+		t.Fatalf("SessionEnd after Stop must not create a duplicate queue item: path=%q err=%v", path, err)
+	}
+}
+
 func TestPayloadForStorageHonorsCaptureModeAndRedactsSecrets(t *testing.T) {
 	payload := map[string]any{
 		"session_id": "session-3", "prompt_id": "prompt-3", "cwd": "/workspace",
@@ -150,10 +229,13 @@ func writeDcodeTranscript(t *testing.T, sessionID, prompt, response string) stri
 		t.Fatal(err)
 	}
 	encoder := json.NewEncoder(file)
-	for index, value := range []map[string]any{
+	records := []map[string]any{
 		{"schema_version": 1, "sequence": 0, "record_id": "user-1", "thread_id": sessionID, "role": "user", "message_id": "user-1", "content": prompt},
-		{"schema_version": 1, "sequence": 1, "record_id": "assistant-1", "thread_id": sessionID, "role": "assistant", "message_id": "assistant-1", "content": response},
-	} {
+	}
+	if response != "" {
+		records = append(records, map[string]any{"schema_version": 1, "sequence": 1, "record_id": "assistant-1", "thread_id": sessionID, "role": "assistant", "message_id": "assistant-1", "content": response})
+	}
+	for index, value := range records {
 		value["sequence"] = index
 		if err := encoder.Encode(value); err != nil {
 			_ = file.Close()

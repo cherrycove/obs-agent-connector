@@ -390,6 +390,35 @@ func TestDcodeInstallUsesBuiltin(t *testing.T) {
 	}
 }
 
+func TestBuiltinInstallReportsKiroAndDcodeTelemetryBoundaries(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	executable := filepath.Join(home, ".local", "bin", "obs-agent-connector")
+	originalExecutable := currentExecutable
+	currentExecutable = func() (string, error) { return executable, nil }
+	t.Cleanup(func() { currentExecutable = originalExecutable })
+
+	kiroOutput := captureStdout(t, func() {
+		if err := installBuiltinAdapter(agent.Get("kiro"), installInput{}, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, expected := range []string{"interactive V3 TTY", "kiro-cli chat --v3", "default V2", "--no-interactive"} {
+		if !strings.Contains(kiroOutput, expected) {
+			t.Fatalf("Kiro install output did not report %q:\n%s", expected, kiroOutput)
+		}
+	}
+
+	dcodeOutput := captureStdout(t, func() {
+		if err := installBuiltinAdapter(agent.Get("dcode"), installInput{}, true); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(dcodeOutput, "SessionEnd with reason=other") || !strings.Contains(dcodeOutput, "provider error details remain unavailable") {
+		t.Fatalf("Dcode install output did not report the failure-terminal fallback:\n%s", dcodeOutput)
+	}
+}
+
 func TestLifecycleCommandsRejectRemovedNewRuntimeFlag(t *testing.T) {
 	tests := map[string]func([]string) error{
 		"install": install,

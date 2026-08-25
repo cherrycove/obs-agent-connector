@@ -123,7 +123,7 @@ func TestReadTurnMarksToolFailureAndHonorsCaptureNone(t *testing.T) {
 	}
 }
 
-func TestReadTurnSkipsBlankTerminalTurn(t *testing.T) {
+func TestReadTurnSkipsUserOnlyTurnWithoutTerminalEvidence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "thread-4.jsonl")
 	writeTranscript(t, path, []map[string]any{
 		{"schema_version": 1, "sequence": 0, "record_id": "user-4", "thread_id": "thread-4", "role": "user", "content": "hello"},
@@ -134,6 +134,34 @@ func TestReadTurnSkipsBlankTerminalTurn(t *testing.T) {
 	})
 	if err != nil || ok {
 		t.Fatalf("expected blank turn to be skipped, ok=%t err=%v", ok, err)
+	}
+}
+
+func TestReadTurnBuildsErrorFromFailedSessionEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread-5.jsonl")
+	writeTranscript(t, path, []map[string]any{
+		{"schema_version": 1, "sequence": 0, "record_id": "user-5", "thread_id": "thread-5", "role": "user", "content": "hello"},
+	})
+	start := time.Now().Add(-5 * time.Second).UnixNano()
+	end := time.Now().UnixNano()
+	turn, ok, err := ReadTurn(Options{
+		TranscriptPath: path, SessionID: "thread-5", TurnID: "prompt-5", CaptureContent: "none", MaxChars: 20_000,
+		Events: []JournalEvent{
+			{Event: "UserPromptSubmit", RecordedNano: start, Payload: map[string]any{"prompt": "hello"}},
+			{Event: "SessionEnd", RecordedNano: end, Payload: map[string]any{"reason": "other"}},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("ReadTurn() ok=%t err=%v", ok, err)
+	}
+	if turn.ErrorType != "dcode_agent_error" || turn.FinalStatus != model.FinalStatusCompleted {
+		t.Fatalf("failed SessionEnd was not represented as a terminal error: %#v", turn)
+	}
+	if turn.StartUnixNano != start || turn.EndUnixNano != end || turn.ExtraAttributes["dcode.session_end.reason"] != "other" {
+		t.Fatalf("unexpected failed SessionEnd timing or evidence: %#v", turn)
+	}
+	if turn.InputMessages != nil || turn.InputPreview != "" || len(turn.LLMCalls) != 0 || len(turn.AssistantOutputs) != 0 {
+		t.Fatalf("failed SessionEnd fabricated content or child spans: %#v", turn)
 	}
 }
 

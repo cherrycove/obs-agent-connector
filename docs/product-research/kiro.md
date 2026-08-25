@@ -6,20 +6,22 @@
 - Locally validated binaries: `kiro-cli 2.18.1` legacy v3 storage and `kiro-cli 2.19.1` modern workspace-bucketed storage on Linux x64.
 - Supported connector platforms: macOS, Linux, and Windows. Kiro officially supports the CLI on all three; product-level telemetry validation currently covers Linux x64 only.
 - Target implementation: the built-in Kiro adapter in `obs-agent-connector`.
-- Evidence date: 2026-08-24.
+- Evidence date: 2026-08-25.
 
-The connector does not instrument Kiro IDE sessions or legacy Kiro CLI v1/v2 SQLite sessions. The integration depends on global Hooks and exact terminal-session replay. It supports both the modern 2.19.1 message journal and the legacy v3 JSONL layout.
+The connector does not instrument Kiro IDE sessions, default V2 sessions, non-interactive sessions, or legacy Kiro CLI v1/v2 SQLite sessions. The integration requires a V3 interactive TTY launched with `kiro-cli chat --v3`, because standalone global Hooks are a V3 surface. It supports both the modern 2.19.1 message journal and the legacy V3 JSONL layout after the required Hooks fire.
 
 ## 2. Hook Capability
 
 | Item | Conclusion | Evidence |
 | --- | --- | --- |
-| Extension mechanism | Command Hooks in global or project `.kiro/hooks/*.json` files | Kiro Hooks and configuration-scope documentation |
+| Extension mechanism | V3 Command Hooks in global or project `.kiro/hooks/*.json` files | Kiro Hooks and CLI 3.0 documentation |
+| Supported launch mode | Interactive TTY with `kiro-cli chat --v3` | Local 2.19.1 end-to-end validation and CLI 3.0 mode documentation |
+| Unsupported launch modes | Default V2, `kiro-cli chat --no-interactive`, and V3 non-interactive compatibility paths | Standalone global Hooks are not invoked in local 2.19.1 validation |
 | Used Hooks | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` | Current Hook trigger reference |
 | Hook input | JSON on stdin, including `session_id` and `cwd`; tool Hooks add tool name/input/response; Stop may omit `assistant_response` | Current CLI Hook reference and local 2.19.1 payloads |
 | Timeout and failure | Command Hooks have a bounded timeout; nonzero exits are reported by Kiro | Current Hook action documentation |
 | Duplicate/concurrent events | No uniqueness guarantee is assumed | Connector journal locks and `(session_id, turn_id)` upload claims |
-| Replay | The exact session message journal is replayed after Stop | Local 2.19.1 and legacy v3 evidence |
+| Replay | The exact session message journal is replayed after Stop | Local 2.19.1 and legacy V3 evidence |
 
 ## 3. Data Sources
 
@@ -101,6 +103,8 @@ Modern `promptTurnSummaries` values with an explicit credit unit are exported on
 | Windows | User home `.kiro` | Same logical path | Same logical path | Same; package-level telemetry validation remains pending |
 
 - Official CLI command: `kiro-cli`.
+- Required telemetry launch: `kiro-cli chat --v3` in a real TTY.
+- Unsupported telemetry launches: default V2 and `--no-interactive`, even when combined with a V3 compatibility flag.
 - Registry: standalone global Hook JSON; no marketplace is required.
 - Runtime config: `~/.obs-agent-connector/kiro/gtrace.json`, with `~/.kiro/gtrace.json` as a migration fallback.
 - Product write-back: Kiro owns its session files; the connector owns only its dedicated Hook file, managed config, journal, queue, upload state, and Hook log.
@@ -147,6 +151,7 @@ All committed fixtures are synthetic and contain no real prompt, user path, endp
 - [x] Modern cancelled turn without assistant output
 - [x] Incomplete modern JSONL tail
 - [x] Exact-session mismatch does not fall back by cwd
+- [x] Product-validated mode matrix: only V3 interactive TTY invokes the standalone global Hooks
 - [ ] Product-validated tool failure payload
 - [x] Product-validated cancelled terminal schema
 - [ ] Skill event
@@ -158,6 +163,7 @@ All committed fixtures are synthetic and contain no real prompt, user path, endp
 | Question | Impact | Current fallback | Follow-up |
 | --- | --- | --- | --- |
 | Kiro schema changes after the locally validated build | Parser may skip new record variants | Ignore unknown kinds; require an exact session and terminal turn | Revalidate on Kiro upgrades |
+| Default V2 or non-interactive launch | Standalone global Hooks do not fire, so no exact terminal correlation is available | Advertise V3 interactive TTY as the supported telemetry surface | Revalidate if Kiro exposes global Hooks on additional engines or headless mode |
 | Modern token usage | Token metrics are unavailable | Do not reinterpret billing credits as tokens | Capture a future explicit token field if Kiro exposes one |
 | Modern multi-request credit attribution | Per-request credit is unavailable | Export aggregate credit on `invoke_agent` without assigning it to individual `llm` spans | Capture a future request ID on each credit summary if Kiro exposes one |
 | Legacy aggregate usage for multi-call turns | Per-call token metrics are unavailable | Do not allocate aggregate tokens across calls | Capture a future per-call usage field if Kiro exposes one |

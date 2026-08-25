@@ -7,9 +7,9 @@
 - Minimum supported product version: `deepagents-code 0.1.46`, where Hooks v2 and transcript capability snapshots are both available.
 - Supported connector platforms: macOS, Linux, and Windows. Product-level telemetry validation currently covers Linux x64 only.
 - Target implementation: the built-in Dcode adapter in `obs-agent-connector`.
-- Evidence date: 2026-08-24.
+- Evidence date: 2026-08-25.
 
-The validated scope covers interactive terminal and headless Dcode sessions that use the common Hook runtime. ACP/IDE-hosted execution has not yet been validated as a separate product surface.
+The validated scope covers interactive terminal and headless Dcode sessions that use the common Hook runtime. Normal turns terminate on `Stop`. In the locally installed Dcode 0.1.60 headless path, an initial model/API exception terminates with `SessionEnd(reason=other)` even though no `Stop`, assistant record, or provider error detail is emitted. The adapter exports that explicit terminal evidence as an error `invoke_agent` without fabricating an `llm` span or usage. ACP/IDE-hosted execution has not yet been validated as a separate product surface.
 
 ## 2. Hook Capability
 
@@ -17,9 +17,10 @@ The validated scope covers interactive terminal and headless Dcode sessions that
 | --- | --- | --- |
 | Extension mechanism | Hooks v2 in user or trusted project `hooks.json` | [Official Hooks reference](https://github.com/langchain-ai/deepagents/blob/main/libs/code/HOOKS.md) |
 | User configuration | `~/.deepagents/hooks.json` | Official Hooks reference |
-| Used events | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SubagentStart`, and `SubagentStop` | Official Hooks reference |
+| Used events | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionEnd`, `SubagentStart`, and `SubagentStop` | Official Hooks reference |
 | Hook input | JSON on stdin with common session/transcript/cwd fields and event-specific prompt, tool, result, duration, error, or subagent fields | Official Hooks reference |
 | Reload behavior | New sessions load Hooks; `/reload` refreshes capabilities in the current interactive session | [Official architecture reference](https://github.com/langchain-ai/deepagents/blob/main/libs/code/ARCHITECTURE.md) |
+| Model/API failure before `Stop` | Locally validated 0.1.60 emits `SessionEnd(reason=other)` after `UserPromptSubmit`; the transcript remains user-only | Generate an error root Trace; omit unsupported exception classification, LLM spans, and usage |
 | Duplicate/concurrent events | No uniqueness guarantee is assumed | Connector journal locks and `(session_id, prompt_id)` upload claims |
 
 Hooks v2 became the default execution engine in 0.1.45, while 0.1.46 added session capability snapshots and transcript metadata needed by this adapter. The connector therefore documents 0.1.46 as the minimum supported version. See the [official changelog](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md).
@@ -54,13 +55,14 @@ Transcript v1 records include sequence, record ID, thread ID, role, message ID, 
 - Tool failure: `PostToolUseFailure`, including error, interrupt status, and duration.
 - Subagent lifecycle: `SubagentStart` and `SubagentStop` with stable agent ID/type.
 - Normal terminal boundary: `Stop`, including `last_assistant_message` as a transcript-lag fallback.
-- Cancellation or failure: inferred from explicit tool failure/interrupt evidence and any terminal evidence available to the Hook surface.
-- Empty/internal records: transcript ranges without a user turn or assistant/tool evidence are not uploaded.
+- Cancellation or failure: explicit tool failure/interrupt evidence is preserved. An initial model/API exception without `Stop` is terminal only when Dcode emits `SessionEnd(reason=other)`; because the event omits the exception, the adapter reports `dcode_agent_error` instead of guessing timeout or provider details.
+- Empty/internal records: transcript ranges without a user turn are not uploaded. A user-only turn is uploaded only with the explicit failed `SessionEnd(reason=other)` terminal boundary.
 
 ```text
 UserPromptSubmit -> reset journal and record prompt
 Pre/Post Hooks   -> append exact tool/subagent boundaries
-Stop             -> append terminal evidence -> queue detached worker -> return
+Stop             -> append normal terminal evidence -> queue worker -> return
+SessionEnd(other) -> if no Stop, append failure evidence -> queue worker -> return
 worker           -> transcript + journal -> normalized terminal Turn
                  -> spans -> metrics -> signal-specific upload state
 ```
@@ -96,7 +98,7 @@ The local session database contains LangGraph checkpoint internals with binary p
 | Windows | User home `.deepagents` | Same logical path | Same logical path | Same; live validation pending |
 
 - Commands: `dcode`, with `deepagents-code` accepted as an alternate discovery command.
-- Registry: the connector merges its seven managed Hook groups and preserves unrelated groups and handlers.
+- Registry: the connector merges its eight managed Hook groups and preserves unrelated groups and handlers.
 - Runtime config: `~/.obs-agent-connector/dcode/gtrace.json`, with `~/.deepagents/gtrace.json` as a migration fallback.
 - Product write-back: Dcode owns its transcripts and other runtime state. The connector owns only its Hook handlers, managed config, journal, queue, upload state, and Hook log.
 - Update behavior: Hook registration is reconciled with `--no-config`, preserving existing telemetry configuration.
@@ -123,6 +125,7 @@ The local session database contains LangGraph checkpoint internals with binary p
 | `PostToolUseFailure` | `ToolCall.Error` | error/interrupted status | Preserves sanitized error evidence |
 | `SubagentStart/Stop` | `SubagentCall` | `subagent:<type>` | Stable `agent_id` correlation |
 | `Stop.last_assistant_message` | `AssistantOutput` | `assistant` | Transcript-lag fallback |
+| `SessionEnd.reason=other` without `Stop` | `Turn.ErrorType` | error `invoke_agent` | Emits `dcode_agent_error`; does not invent an `llm` span or exception classification |
 
 ## 11. Fixtures and Tests
 
@@ -139,6 +142,8 @@ All committed fixtures are synthetic and contain no real prompt, local user path
 - [x] Content-disabled and recursive secret redaction
 - [x] Duplicate-safe and signal-specific upload recovery
 - [x] Locally installed Dcode Hook config load and native `UserPromptSubmit` execution on Linux x64
+- [x] Product-validated model/API failure with `UserPromptSubmit` plus `SessionEnd(reason=other)` and a user-only transcript
+- [x] Error root Trace without fabricated LLM spans, assistant output, token usage, or provider details
 - [ ] macOS and Windows live-session validation
 - [ ] ACP/IDE-hosted session validation
 - [ ] Skill event
@@ -150,6 +155,7 @@ All committed fixtures are synthetic and contain no real prompt, local user path
 | --- | --- | --- | --- |
 | Hook/transcript schema changes after the validated build | Parser may skip new fields or records | Ignore unknown fields and fail open | Revalidate on Dcode upgrades |
 | Stop before the final transcript write is durable | Final transcript record may be missing | Use `last_assistant_message` and retain queued work | Validate retry timing against future builds |
+| Model/API exception before `Stop` | `SessionEnd(reason=other)` proves termination but does not identify timeout, provider error, or exception text | Export `dcode_agent_error` on `invoke_agent`; omit LLM and usage fields | Dcode should expose a dedicated failure event or structured error fields |
 | Provider/model/token visibility | Model and usage metrics are unavailable | Omit unsupported attributes and token metrics | Adopt a future public Hook/transcript field |
 | Skill identity | No Skill spans | Omit unsupported relationships | Add only after Dcode exposes stable Skill evidence |
 | ACP/IDE execution | Hooks may have host-specific lifecycle differences | Advertise terminal validation scope | Run separate ACP integration tests |

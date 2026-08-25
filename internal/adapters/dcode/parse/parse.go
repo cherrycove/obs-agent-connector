@@ -96,7 +96,8 @@ func ReadTurn(options Options) (model.Turn, bool, error) {
 	if len(assistants) == 0 && output != "" {
 		assistants = append(assistants, rawAssistant{ID: derivedID(options.TurnID, "assistant"), Content: output, Text: output})
 	}
-	if strings.TrimSpace(prompt) == "" || (len(assistants) == 0 && len(tools) == 0 && output == "") {
+	_, failedSession := failedSessionEnd(options.Events)
+	if strings.TrimSpace(prompt) == "" || (len(assistants) == 0 && len(tools) == 0 && output == "" && !failedSession) {
 		return model.Turn{}, false, nil
 	}
 	turn := normalize(options, prompt, output, assistants, tools)
@@ -235,6 +236,10 @@ func collectTools(events []JournalEvent) []toolBoundary {
 func normalize(options Options, prompt, output string, assistants []rawAssistant, tools []toolBoundary) model.Turn {
 	start := latestEventTime(options.Events, "UserPromptSubmit")
 	end := latestEventTime(options.Events, "Stop")
+	sessionEnd, failedSession := failedSessionEnd(options.Events)
+	if end <= 0 && failedSession {
+		end = sessionEnd.RecordedNano
+	}
 	if end <= 0 {
 		end = time.Now().UnixNano()
 	}
@@ -249,12 +254,20 @@ func normalize(options Options, prompt, output string, assistants []rawAssistant
 	resource["agent_runtime"] = "dcode"
 	resource["telemetry.sdk.language"] = "go"
 	resource["telemetry.sdk.name"] = "gtrace"
+	errorType := ""
+	reason := ""
+	extraAttributes := map[string]any{"request_type": "user_request", "timing.source": "dcode_hooks"}
+	if failedSession {
+		errorType = "dcode_agent_error"
+		reason = "Dcode ended the session before emitting Stop"
+		extraAttributes["dcode.session_end.reason"] = stringValue(sessionEnd.Payload, "reason")
+	}
 	turn := model.Turn{
 		SessionID: options.SessionID, TurnID: turnID, AgentRuntime: "dcode",
 		AgentName: "Deep Agents Code", AgentVersion: options.AgentVersion,
 		StartUnixNano: start, EndUnixNano: end, FinalStatus: model.FinalStatusCompleted,
 		InputLength: len([]rune(prompt)), OutputLength: len([]rune(output)), Resource: resource,
-		ExtraAttributes: map[string]any{"request_type": "user_request", "timing.source": "dcode_hooks"},
+		ExtraAttributes: extraAttributes, ErrorType: errorType, Reason: reason,
 	}
 	if options.CaptureContent != "none" {
 		turn.InputMessages = textMessage("user", prompt, options.MaxChars)
@@ -355,6 +368,19 @@ func normalize(options Options, prompt, output string, assistants []rawAssistant
 		turn.AssistantOutputs = append(turn.AssistantOutputs, assistant)
 	}
 	return turn
+}
+
+func failedSessionEnd(events []JournalEvent) (JournalEvent, bool) {
+	if latestEventTime(events, "Stop") > 0 {
+		return JournalEvent{}, false
+	}
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if strings.EqualFold(event.Event, "SessionEnd") && strings.EqualFold(stringValue(event.Payload, "reason"), "other") {
+			return event, true
+		}
+	}
+	return JournalEvent{}, false
 }
 
 func toolTriggeringCalls(assistants []rawAssistant) []string {
