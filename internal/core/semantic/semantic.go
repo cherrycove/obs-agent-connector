@@ -57,8 +57,9 @@ func (b Builder) Build(turn model.Turn) []model.Span {
 	setAttr(rootAttrs, "input_length", positiveInt(turn.InputLength))
 	setAttr(rootAttrs, "output_length", positiveInt(turn.OutputLength))
 	setAttr(rootAttrs, "tool_count", len(turn.ToolCalls))
-	addUsage(rootAttrs, turn.Usage)
 	mergeAttrs(rootAttrs, turn.ExtraAttributes)
+	removeUsageAttrs(rootAttrs)
+	setAttr(rootAttrs, "gen_ai.usage.credit", positiveFloat(turn.CreditUsage))
 
 	spans := []model.Span{makeSpan(
 		traceID, rootID, "", "invoke_agent", start, end,
@@ -163,9 +164,7 @@ func observable(turn model.Turn) bool {
 	return strings.TrimSpace(turn.InputPreview) != "" ||
 		strings.TrimSpace(turn.OutputPreview) != "" ||
 		len(turn.LLMCalls) > 0 ||
-		len(turn.ToolCalls) > 0 ||
-		turn.Usage.InputTokens > 0 ||
-		turn.Usage.OutputTokens > 0
+		len(turn.ToolCalls) > 0
 }
 
 func terminal(status model.FinalStatus) bool {
@@ -250,6 +249,14 @@ func addUsage(attrs map[string]any, usage model.Usage) {
 	setAttr(attrs, "gen_ai.usage.cache_read.input_tokens", positiveInt64(usage.CacheReadTokens))
 	setAttr(attrs, "gen_ai.usage.cache_creation.input_tokens", positiveInt64(usage.CacheCreateTokens))
 	setAttr(attrs, "gen_ai.usage.reasoning.output_tokens", positiveInt64(usage.ReasoningTokens))
+}
+
+func removeUsageAttrs(attrs map[string]any) {
+	for key := range attrs {
+		if strings.HasPrefix(key, "gen_ai.usage.") {
+			delete(attrs, key)
+		}
+	}
 }
 
 func addSkillAttrs(attrs map[string]any, skill model.SkillUse) {

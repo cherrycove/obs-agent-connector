@@ -44,8 +44,6 @@
         "gen_ai.response.finish_reasons": [
           "stop"
         ],
-        "gen_ai.usage.input_tokens": 8,
-        "gen_ai.usage.output_tokens": 3,
         "session_id": "sess-child",
         "tool_count": 0
       }
@@ -64,8 +62,6 @@
         "gen_ai.response.finish_reasons": [
           "stop"
         ],
-        "gen_ai.usage.input_tokens": 10,
-        "gen_ai.usage.output_tokens": 4,
         "session_id": "sess-parent",
         "tool_count": 0
       }

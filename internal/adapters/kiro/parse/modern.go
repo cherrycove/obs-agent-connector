@@ -312,11 +312,8 @@ func normalizeModern(session modernSession, raw modernTurn, options Options) mod
 		AgentRuntime: "kiro", AgentName: "Kiro", AgentVersion: options.AgentVersion,
 		StartUnixNano: start, EndUnixNano: end, FinalStatus: status,
 		InputLength: len([]rune(raw.Prompt)), OutputLength: len([]rune(output)),
-		Resource: resource, ErrorType: errorType, Reason: reason,
+		CreditUsage: raw.Credit, Resource: resource, ErrorType: errorType, Reason: reason,
 		ExtraAttributes: map[string]any{"request_type": "user_request", "timing.source": "kiro_message_journal"},
-	}
-	if raw.Credit > 0 {
-		turn.ExtraAttributes["gen_ai.usage.credit"] = raw.Credit
 	}
 	if options.CaptureContent != "none" {
 		turn.InputMessages = textMessage("user", raw.Prompt, options.MaxChars)

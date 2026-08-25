@@ -141,8 +141,13 @@ Generate an observability dashboard.
 	if firstLLM.ParentID != root.SpanID || tool.ParentID != root.SpanID || skill.ParentID != tool.SpanID {
 		t.Fatalf("unexpected parent chain root=%s llm=%s tool=%s skill=%s", root.SpanID, firstLLM.ParentID, tool.ParentID, skill.ParentID)
 	}
-	if root.Attributes[attrUsageInputTokens] != 50 || root.Attributes[attrUsageOutputTokens] != 16 {
-		t.Fatalf("unexpected root usage attrs: %#v", root.Attributes)
+	for key := range root.Attributes {
+		if strings.HasPrefix(key, "gen_ai.usage.") {
+			t.Fatalf("invoke_agent must not carry usage attribute %s: %#v", key, root.Attributes)
+		}
+	}
+	if firstLLM.Attributes[attrUsageInputTokens] != 20 || firstLLM.Attributes[attrUsageOutputTokens] != 6 {
+		t.Fatalf("unexpected llm usage attrs: %#v", firstLLM.Attributes)
 	}
 	if root.Attributes["session_create_at"] != "2026-06-03T09:59:58Z" ||
 		root.Attributes["session_updated_at"] != "2026-06-03T10:00:03.300Z" ||

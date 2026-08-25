@@ -148,8 +148,7 @@ func TestReadLatestTurnBuildsModernKiroTurn(t *testing.T) {
 			"type": "usage_summary", "executionId": executionID, "status": "success",
 			"requestIds": []any{"request-1", "request-2"},
 			"promptTurnSummaries": []any{
-				map[string]any{"usage": 0.25, "unit": "credit"},
-				map[string]any{"usage": 0.20, "unitPlural": "credits"},
+				map[string]any{"usage": 0.45, "unit": "credit", "unitPlural": "credits"},
 				map[string]any{"usage": 99.0, "unit": "request"},
 			},
 		}),
@@ -179,21 +178,17 @@ func TestReadLatestTurnBuildsModernKiroTurn(t *testing.T) {
 	if turn.Usage != (model.Usage{}) || turn.LLMCalls[0].Usage != (model.Usage{}) {
 		t.Fatalf("Kiro credits must not be exported as token usage: root=%#v calls=%#v", turn.Usage, turn.LLMCalls)
 	}
-	credit, ok := turn.ExtraAttributes["gen_ai.usage.credit"].(float64)
-	if !ok || math.Abs(credit-0.45) > 1e-9 {
-		t.Fatalf("unexpected Kiro credit usage: %#v", turn.ExtraAttributes)
-	}
 	spans := (semantic.Builder{ScopeVersion: "test"}).Build(turn)
 	if len(spans) == 0 || spans[0].Name != "invoke_agent" {
-		t.Fatalf("Kiro credit usage was not exported on invoke_agent: %#v", spans)
+		t.Fatalf("missing Kiro invoke_agent span: %#v", spans)
 	}
-	rootCredit, ok := spans[0].Attributes["gen_ai.usage.credit"].(float64)
-	if !ok || math.Abs(rootCredit-0.45) > 1e-9 {
-		t.Fatalf("unexpected invoke_agent credit usage: %#v", spans[0].Attributes)
+	credit, ok := spans[0].Attributes["gen_ai.usage.credit"].(float64)
+	if !ok || math.Abs(credit-0.45) > 1e-12 {
+		t.Fatalf("aggregate credit was not exported on invoke_agent: %#v", spans[0])
 	}
 	for _, span := range spans[1:] {
 		if _, exists := span.Attributes["gen_ai.usage.credit"]; exists {
-			t.Fatalf("Kiro credit usage must only be exported on invoke_agent: %#v", span)
+			t.Fatalf("aggregate credit must not be copied to a child span: %#v", span)
 		}
 	}
 	if len(turn.ToolCalls) != 1 || turn.ToolCalls[0].CallID != "tool-1" || turn.ToolCalls[0].TriggeringLLMCall != "request-1" {
@@ -201,6 +196,46 @@ func TestReadLatestTurnBuildsModernKiroTurn(t *testing.T) {
 	}
 	if turn.ToolCalls[0].StartUnixNano != preTime || turn.ToolCalls[0].EndUnixNano != postTime || turn.ToolCalls[0].Command != "go test ./..." {
 		t.Fatalf("Hook evidence did not override modern tool timing: %#v", turn.ToolCalls[0])
+	}
+}
+
+func TestNormalizeModernExportsSingleRequestCreditOnInvokeAgent(t *testing.T) {
+	start := time.Date(2026, time.August, 25, 4, 28, 11, 0, time.UTC).UnixNano()
+	turn := normalizeModern(modernSession{
+		ID:       "sess-credit",
+		Metadata: map[string]any{"modelId": "auto"},
+	}, modernTurn{
+		Prompt:      "hi",
+		ExecutionID: "execution-credit",
+		StartNano:   start,
+		EndNano:     start + int64(5*time.Second),
+		Credit:      0.07633302935323384,
+		StopReason:  "end_turn",
+		UsageStatus: "success",
+		Terminal:    true,
+		RequestIDs:  []string{"request-credit"},
+		Assistants:  []modernAssistant{{Text: "hello", RecordedNano: start + int64(4*time.Second)}},
+	}, Options{CaptureContent: "preview", MaxChars: 20_000})
+
+	if math.Abs(turn.CreditUsage-0.07633302935323384) > 1e-12 {
+		t.Fatalf("unexpected turn credit: %v", turn.CreditUsage)
+	}
+	if len(turn.LLMCalls) != 1 {
+		t.Fatalf("expected one LLM call, got %#v", turn.LLMCalls)
+	}
+	if _, exists := turn.LLMCalls[0].ExtraAttributes["gen_ai.usage.credit"]; exists {
+		t.Fatalf("LLM must not carry aggregate credit: %#v", turn.LLMCalls[0].ExtraAttributes)
+	}
+	spans := (semantic.Builder{ScopeVersion: "test"}).Build(turn)
+	credit, ok := spans[0].Attributes["gen_ai.usage.credit"].(float64)
+	if !ok || math.Abs(credit-turn.CreditUsage) > 1e-12 {
+		t.Fatalf("credit was not exported on invoke_agent: %#v", spans[0])
+	}
+	if spans[1].Name != "llm" {
+		t.Fatalf("missing LLM span: %#v", spans)
+	}
+	if _, exists := spans[1].Attributes["gen_ai.usage.credit"]; exists {
+		t.Fatalf("credit must not be copied to llm: %#v", spans[1])
 	}
 }
 

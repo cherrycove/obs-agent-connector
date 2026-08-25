@@ -87,8 +87,6 @@
             "type": "function"
           }
         ],
-        "gen_ai.usage.input_tokens": 50,
-        "gen_ai.usage.output_tokens": 16,
         "session_id": "sess-skill-order",
         "tool_count": 1
       }

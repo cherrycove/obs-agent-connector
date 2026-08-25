@@ -101,6 +101,7 @@ type Turn struct {
 	InputLength      int
 	OutputLength     int
 	Usage            Usage
+	CreditUsage      float64
 	LLMCalls         []LLMCall
 	ToolCalls        []ToolCall
 	AssistantOutputs []AssistantOutput

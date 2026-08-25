@@ -266,7 +266,6 @@ func buildTurnSpans(turn *model.Turn, sessionMeta model.SessionMeta, cfg config.
 	setAttr(rootAttrs, attrInputMessages, buildInputMessages(turn.UserInput, nil, maxChars))
 	setAttr(rootAttrs, attrOutputMessages, buildOutputMessages(turn.FinalOutput, "", nil, boolFinishReason(turn), maxChars))
 	setAttr(rootAttrs, "tool_count", countToolCalls(turn))
-	setUsageAttrs(rootAttrs, aggregateTurnUsage(turn))
 	setAttr(rootAttrs, "final_status", statusFromTurn(turn))
 	setAttr(rootAttrs, "status", turnStatusValue(turn.Aborted))
 	setAttr(rootAttrs, "reason", abortReason(turn.Aborted))
@@ -274,6 +273,7 @@ func buildTurnSpans(turn *model.Turn, sessionMeta model.SessionMeta, cfg config.
 	setAttr(rootAttrs, "session_create_at", sessionMeta.CreatedAt)
 	setAttr(rootAttrs, "session_updated_at", isoFromMs(turn.EndTime))
 	setAttr(rootAttrs, "session_channel", sessionMeta.Channel)
+	removeUsageAttrs(rootAttrs)
 
 	spans := []model.Span{
 		makeSpan(traceID, rootSpanID, parentID, "invoke_agent", turn.StartTime, turn.EndTime, rootAttrs, resource, scope, ingest, spanStatus(turn.Aborted, "")),
@@ -829,32 +829,12 @@ func setUsageAttrs(attributes map[string]any, usage usageDetails) {
 	}
 }
 
-func aggregateTurnUsage(turn *model.Turn) usageDetails {
-	total := usageDetailsFromMap(turn.TotalUsage)
-	if total.hasAny() {
-		return total
-	}
-	var aggregate usageDetails
-	for _, step := range turn.Steps {
-		usage := usageDetailsFromMap(step.Usage)
-		if usage.HasInput {
-			aggregate.Input += usage.Input
-			aggregate.HasInput = true
-		}
-		if usage.HasOutput {
-			aggregate.Output += usage.Output
-			aggregate.HasOutput = true
-		}
-		if usage.HasCacheReadInputTokens {
-			aggregate.CacheReadInputTokens += usage.CacheReadInputTokens
-			aggregate.HasCacheReadInputTokens = true
-		}
-		if usage.HasReasoningOutputTokens {
-			aggregate.ReasoningOutputTokens += usage.ReasoningOutputTokens
-			aggregate.HasReasoningOutputTokens = true
+func removeUsageAttrs(attributes map[string]any) {
+	for key := range attributes {
+		if strings.HasPrefix(key, "gen_ai.usage.") {
+			delete(attributes, key)
 		}
 	}
-	return aggregate
 }
 
 func countToolCalls(turn *model.Turn) int {
