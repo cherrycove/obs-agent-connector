@@ -17,7 +17,7 @@ func dcodePlugin() Definition {
 		AgentCommand:             "dcode",
 		DiscoveryCommandOptional: true,
 		Markers: []string{
-			"~/.obs-agent-connector/dcode/gtrace.json",
+			"~/.deepagents/hooks.json",
 		},
 		ConfigFiles:     []string{"~/.obs-agent-connector/dcode/gtrace.json", "~/.deepagents/gtrace.json"},
 		EnabledJSONPath: []string{"enabled"},

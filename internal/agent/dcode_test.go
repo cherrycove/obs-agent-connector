@@ -53,3 +53,39 @@ func TestDiscoverCandidatesIncludesDcodeCommand(t *testing.T) {
 	}
 	t.Fatal("expected dcode to be discoverable")
 }
+
+func TestDcodeInstalledMarkerUsesManagedHook(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, ".obs-agent-connector", "dcode", "gtrace.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"enabled":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plugin := definitions["dcode"]
+	if path, installed := InstalledMarker(plugin); installed || path != "" {
+		t.Fatalf("config without a managed Hook must not count as installed: path=%q installed=%t", path, installed)
+	}
+
+	hooksPath := filepath.Join(home, ".deepagents", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo unrelated"}]}]}}`
+	if err := os.WriteFile(hooksPath, []byte(unrelated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if path, installed := InstalledMarker(plugin); installed || path != "" {
+		t.Fatalf("unrelated Hook must not count as installed: path=%q installed=%t", path, installed)
+	}
+
+	managed := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/tmp/obs-agent-connector hook dcode Stop"}]}]}}`
+	if err := os.WriteFile(hooksPath, []byte(managed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if path, installed := InstalledMarker(plugin); !installed || path != hooksPath {
+		t.Fatalf("managed dcode Hook was not detected: path=%q installed=%t", path, installed)
+	}
+}

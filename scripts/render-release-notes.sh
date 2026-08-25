@@ -40,7 +40,11 @@ render_changes() {
     dcode_release=false
 
     if printf '%s\n' "${changed_files}" | grep -Eq '(^|/)dcode([^/]*|/.*)$'; then
-      append_line "- Added built-in Deep Agents Code discovery, Hooks v2 lifecycle management, transcript replay telemetry, and persistent signal-level retry."
+      if git -C "${ROOT_DIR}" cat-file -e "${previous}:internal/adapters/dcode" 2>/dev/null; then
+        append_line "- Fixed Dcode installed-state detection so list, status, and discover recognize connector-managed Hooks."
+      else
+        append_line "- Added built-in Deep Agents Code discovery, Hooks v2 lifecycle management, transcript replay telemetry, and persistent signal-level retry."
+      fi
       dcode_release=true
     fi
 
