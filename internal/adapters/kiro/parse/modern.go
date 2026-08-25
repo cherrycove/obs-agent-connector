@@ -43,6 +43,7 @@ type modernTurn struct {
 	ExecutionID string
 	StartNano   int64
 	EndNano     int64
+	Credit      float64
 	StopReason  string
 	UsageStatus string
 	Terminal    bool
@@ -245,6 +246,7 @@ func readModernTurns(path string) ([]modernTurn, error) {
 			if !belongsToModernTurn(current, payload) {
 				continue
 			}
+			current.Credit = modernCreditUsage(payload["promptTurnSummaries"])
 			current.UsageStatus = stringValue(payload, "status")
 			current.RequestIDs = stringSlice(payload["requestIds"])
 		case "turn_end":
@@ -312,6 +314,9 @@ func normalizeModern(session modernSession, raw modernTurn, options Options) mod
 		InputLength: len([]rune(raw.Prompt)), OutputLength: len([]rune(output)),
 		Resource: resource, ErrorType: errorType, Reason: reason,
 		ExtraAttributes: map[string]any{"request_type": "user_request", "timing.source": "kiro_message_journal"},
+	}
+	if raw.Credit > 0 {
+		turn.ExtraAttributes["gen_ai.usage.credit"] = raw.Credit
 	}
 	if options.CaptureContent != "none" {
 		turn.InputMessages = textMessage("user", raw.Prompt, options.MaxChars)
@@ -489,6 +494,24 @@ func stringSlice(value any) []string {
 		}
 	}
 	return out
+}
+
+func modernCreditUsage(value any) float64 {
+	total := 0.0
+	for _, summary := range objectSlice(value) {
+		unit := strings.ToLower(firstNonEmpty(
+			stringValue(summary, "unit"),
+			stringValue(summary, "unitPlural"),
+		))
+		if unit != "credit" && unit != "credits" {
+			continue
+		}
+		usage, ok := summary["usage"].(float64)
+		if ok && usage > 0 {
+			total += usage
+		}
+	}
+	return total
 }
 
 func minInt(left, right int) int {

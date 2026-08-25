@@ -50,7 +50,11 @@ render_changes() {
 
     if printf '%s\n' "${changed_files}" | grep -Eq '(^|/)kiro([^/]*|/.*)$'; then
       if git -C "${ROOT_DIR}" cat-file -e "${previous}:internal/adapters/kiro" 2>/dev/null; then
-        append_line "- Fixed Kiro CLI 2.19.1 telemetry replay with exact session matching, modern workspace-bucketed session support, and legacy v3 compatibility."
+        if git -C "${ROOT_DIR}" diff "${previous}..${VERSION}" -- internal/adapters/kiro | grep -F 'gen_ai.usage.credit' >/dev/null; then
+          append_line "- Added Kiro billing credit telemetry on invoke_agent through the gen_ai.usage.credit attribute without fabricating token usage."
+        else
+          append_line "- Fixed Kiro CLI 2.19.1 telemetry replay with exact session matching, modern workspace-bucketed session support, and legacy v3 compatibility."
+        fi
       else
         append_line "- Added built-in Kiro CLI discovery, lifecycle management, hooks, session replay telemetry, and persistent retry."
       fi

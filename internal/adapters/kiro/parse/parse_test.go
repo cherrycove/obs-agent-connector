@@ -3,12 +3,14 @@ package parse
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/GuanceCloud/obs-agent-connector/internal/core/model"
+	"github.com/GuanceCloud/obs-agent-connector/internal/core/semantic"
 )
 
 func TestReadLatestTurnBuildsKiroToolChain(t *testing.T) {
@@ -144,8 +146,12 @@ func TestReadLatestTurnBuildsModernKiroTurn(t *testing.T) {
 		modernRecord("say-2", start.Add(5*time.Second), map[string]any{"type": "assistant", "executionId": executionID, "operationType": "Say", "content": "done"}),
 		modernRecord("usage", start.Add(5500*time.Millisecond), map[string]any{
 			"type": "usage_summary", "executionId": executionID, "status": "success",
-			"requestIds":          []any{"request-1", "request-2"},
-			"promptTurnSummaries": []any{map[string]any{"usage": float64(999), "unit": "credit"}},
+			"requestIds": []any{"request-1", "request-2"},
+			"promptTurnSummaries": []any{
+				map[string]any{"usage": 0.25, "unit": "credit"},
+				map[string]any{"usage": 0.20, "unitPlural": "credits"},
+				map[string]any{"usage": 99.0, "unit": "request"},
+			},
 		}),
 		modernRecord("turn-end", end, map[string]any{"type": "turn_end", "executionId": executionID, "stopReason": "end_turn"}),
 	})
@@ -173,11 +179,39 @@ func TestReadLatestTurnBuildsModernKiroTurn(t *testing.T) {
 	if turn.Usage != (model.Usage{}) || turn.LLMCalls[0].Usage != (model.Usage{}) {
 		t.Fatalf("Kiro credits must not be exported as token usage: root=%#v calls=%#v", turn.Usage, turn.LLMCalls)
 	}
+	credit, ok := turn.ExtraAttributes["gen_ai.usage.credit"].(float64)
+	if !ok || math.Abs(credit-0.45) > 1e-9 {
+		t.Fatalf("unexpected Kiro credit usage: %#v", turn.ExtraAttributes)
+	}
+	spans := (semantic.Builder{ScopeVersion: "test"}).Build(turn)
+	if len(spans) == 0 || spans[0].Name != "invoke_agent" {
+		t.Fatalf("Kiro credit usage was not exported on invoke_agent: %#v", spans)
+	}
+	rootCredit, ok := spans[0].Attributes["gen_ai.usage.credit"].(float64)
+	if !ok || math.Abs(rootCredit-0.45) > 1e-9 {
+		t.Fatalf("unexpected invoke_agent credit usage: %#v", spans[0].Attributes)
+	}
+	for _, span := range spans[1:] {
+		if _, exists := span.Attributes["gen_ai.usage.credit"]; exists {
+			t.Fatalf("Kiro credit usage must only be exported on invoke_agent: %#v", span)
+		}
+	}
 	if len(turn.ToolCalls) != 1 || turn.ToolCalls[0].CallID != "tool-1" || turn.ToolCalls[0].TriggeringLLMCall != "request-1" {
 		t.Fatalf("unexpected modern tool call: %#v", turn.ToolCalls)
 	}
 	if turn.ToolCalls[0].StartUnixNano != preTime || turn.ToolCalls[0].EndUnixNano != postTime || turn.ToolCalls[0].Command != "go test ./..." {
 		t.Fatalf("Hook evidence did not override modern tool timing: %#v", turn.ToolCalls[0])
+	}
+}
+
+func TestModernCreditUsageRequiresExplicitCreditUnit(t *testing.T) {
+	usage := modernCreditUsage([]any{
+		map[string]any{"usage": 3.0},
+		map[string]any{"usage": 4.0, "unit": "request"},
+		map[string]any{"usage": -1.0, "unit": "credit"},
+	})
+	if usage != 0 {
+		t.Fatalf("non-credit summaries must be ignored, got %v", usage)
 	}
 }
 

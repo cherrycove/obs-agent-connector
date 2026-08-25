@@ -75,12 +75,13 @@ worker           -> exact session metadata + JSONL -> normalized terminal Turn
 | Output token | Legacy `output_token_count` | Aggregate turn | Unavailable in the modern 2.19.1 journal |
 | Cache read token | Legacy `cache_read_input_token_count` | Aggregate turn | Unavailable in the modern 2.19.1 journal |
 | Cache creation token | Legacy `cache_write_input_token_count` | Aggregate turn | Unavailable in the modern 2.19.1 journal |
+| Billing credit | Modern `promptTurnSummaries[].usage` with an explicit `credit` or `credits` unit | Aggregate turn | Exported on `invoke_agent` as `gen_ai.usage.credit`; not emitted as a token metric |
 | Reasoning token | Unknown | — | Omitted |
 | Finish reason | Modern `turn_end.stopReason` or legacy sidecar end reason | Turn | Terminal status remains separate |
 | Start/end | Modern record timestamps or legacy sidecar duration | Turn | Per-call windows are non-overlapping inferred slices |
 | TTFT | Unknown | — | Omitted |
 
-The modern `promptTurnSummaries` values are billing credits, not token counts, and are never mapped to token usage. Legacy storage exposes aggregate turn usage rather than verified per-LLM usage. For legacy multi-call tool chains the adapter keeps usage on the root Turn and does not fabricate per-call token allocation.
+Modern `promptTurnSummaries` values with an explicit credit unit are exported as the aggregate root attribute `gen_ai.usage.credit`. They are never mapped to token usage or `gen_ai.client.token.usage`. Legacy storage exposes aggregate turn usage rather than verified per-LLM usage. For legacy multi-call tool chains the adapter keeps usage on the root Turn and does not fabricate per-call token allocation.
 
 ## 7. Tool, Skill, and Subagent Data
 
@@ -127,6 +128,7 @@ The modern `promptTurnSummaries` values are billing credits, not token counts, a
 | Modern `tool_result` / legacy `ToolResults` / `PostToolUse` | `ToolCall.Result` | tool result attributes | Transcript result has precedence |
 | Stop assistant response | `AssistantOutput` | `assistant` | Used as a transcript-lag fallback |
 | Modern record timestamps / legacy sidecar duration | Turn window | root duration | Exact product evidence when present |
+| Modern credit summaries | `Turn.ExtraAttributes` | `gen_ai.usage.credit` on `invoke_agent` | Aggregate billing credit; not token usage |
 | Legacy sidecar token counts | `Turn.Usage` | usage attributes/metrics | Per-call only for a verified single-call turn |
 
 ## 11. Fixtures and Tests
@@ -141,6 +143,7 @@ All committed fixtures are synthetic and contain no real prompt, user path, endp
 - [x] Duplicate-safe upload state
 - [x] Content disabled and recursive secret redaction
 - [x] Modern 2.19.1 normal and multi-request turns
+- [x] Modern billing credit aggregation without token fabrication
 - [x] Modern cancelled turn without assistant output
 - [x] Incomplete modern JSONL tail
 - [x] Exact-session mismatch does not fall back by cwd
