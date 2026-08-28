@@ -1,14 +1,13 @@
 package semantic
 
 import (
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/GuanceCloud/obs-agent-connector/internal/core/model"
 )
 
-func TestBuildProducesCanonicalTreeAndNoAssistantTokens(t *testing.T) {
+func TestBuildProducesCanonicalTreeWithRootSummaryAndNoAssistantTokens(t *testing.T) {
 	start := time.Date(2026, 7, 31, 1, 0, 0, 0, time.UTC).UnixNano()
 	turn := model.Turn{
 		SessionID:     "session-test",
@@ -52,10 +51,8 @@ func TestBuildProducesCanonicalTreeAndNoAssistantTokens(t *testing.T) {
 		t.Fatalf("expected 5 spans, got %d", len(spans))
 	}
 	root := spans[0]
-	for key := range root.Attributes {
-		if strings.HasPrefix(key, "gen_ai.usage.") {
-			t.Fatalf("invoke_agent must not carry usage attribute %s", key)
-		}
+	if root.Attributes["gen_ai.usage.input_tokens"] != int64(13) || root.Attributes["gen_ai.usage.output_tokens"] != int64(5) {
+		t.Fatalf("invoke_agent aggregate usage was not preserved: %#v", root.Attributes)
 	}
 	ids := map[string]string{}
 	for _, span := range spans {
@@ -86,7 +83,7 @@ func TestBuildProducesCanonicalTreeAndNoAssistantTokens(t *testing.T) {
 	}
 }
 
-func TestBuildExportsExplicitTurnCreditWithoutRootTokens(t *testing.T) {
+func TestBuildExportsExplicitTurnCreditAndRootTokens(t *testing.T) {
 	start := time.Date(2026, 8, 25, 1, 0, 0, 0, time.UTC).UnixNano()
 	turn := model.Turn{
 		SessionID:     "session-credit",
@@ -108,11 +105,8 @@ func TestBuildExportsExplicitTurnCreditWithoutRootTokens(t *testing.T) {
 	if spans[0].Attributes["gen_ai.usage.credit"] != 0.45 {
 		t.Fatalf("explicit turn credit was not preserved: %#v", spans[0].Attributes)
 	}
-	if _, exists := spans[0].Attributes["gen_ai.usage.input_tokens"]; exists {
-		t.Fatalf("invoke_agent must not carry token usage: %#v", spans[0].Attributes)
-	}
-	if _, exists := spans[0].Attributes["gen_ai.usage.output_tokens"]; exists {
-		t.Fatalf("invoke_agent must not carry token usage: %#v", spans[0].Attributes)
+	if spans[0].Attributes["gen_ai.usage.input_tokens"] != int64(13) || spans[0].Attributes["gen_ai.usage.output_tokens"] != int64(5) {
+		t.Fatalf("invoke_agent aggregate usage was not preserved: %#v", spans[0].Attributes)
 	}
 }
 

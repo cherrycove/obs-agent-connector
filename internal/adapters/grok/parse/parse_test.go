@@ -110,6 +110,9 @@ func TestReadTurnRequiresDurableTerminalAndBuildsPairedResponses(t *testing.T) {
 		t.Fatalf("unexpected Grok trace shape: %#v", spans)
 	}
 	rootID := spans[0].SpanID
+	if spans[0].Attributes["gen_ai.usage.input_tokens"] != int64(35) || spans[0].Attributes["gen_ai.usage.output_tokens"] != int64(12) {
+		t.Fatalf("root aggregate usage was not preserved: %#v", spans[0].Attributes)
+	}
 	toolID := ""
 	for _, span := range spans[1:] {
 		switch span.Name {
@@ -144,6 +147,83 @@ func TestReadTurnRequiresDurableTerminalAndBuildsPairedResponses(t *testing.T) {
 	}
 	if tokenPoints != 4 {
 		t.Fatalf("expected input/output token points for exactly two LLM calls, got %d", tokenPoints)
+	}
+}
+
+func TestReadTurnBuildsSingleCallFromStableTurnUsage(t *testing.T) {
+	path := filepath.Join("testdata", "updates_turn_usage_single.jsonl")
+	start := time.Unix(393, 0).UnixNano()
+	turn, ok, err := ReadTurn(Options{
+		TranscriptPath: path, SessionID: "synthetic-turn-usage-session", TurnID: "synthetic-turn-usage-prompt",
+		CaptureContent: "preview", MaxChars: 100,
+		Events: []JournalEvent{{Event: "UserPromptSubmit", RecordedNano: start, Payload: map[string]any{"prompt": "hello"}}},
+	})
+	if err != nil || !ok {
+		t.Fatalf("ReadTurn() ok=%t err=%v", ok, err)
+	}
+	if turn.Usage.InputTokens != 17991 || turn.Usage.OutputTokens != 221 || turn.Usage.ReasoningTokens != 209 {
+		t.Fatalf("turn aggregate usage was not preserved: %#v", turn.Usage)
+	}
+	if len(turn.LLMCalls) != 1 {
+		t.Fatalf("stable single-call usage did not create one LLM call: %#v", turn.LLMCalls)
+	}
+	call := turn.LLMCalls[0]
+	if call.ResponseModel != "grok-4.6" || call.Usage != turn.Usage {
+		t.Fatalf("single-call model or usage was not preserved: %#v", call)
+	}
+	if call.EndUnixNano-call.StartUnixNano != int64(5911*time.Millisecond) || call.ExtraAttributes["timing.source"] != "grok_turn_completed_usage" {
+		t.Fatalf("single-call timing was not derived from apiDurationMs: %#v", call)
+	}
+
+	spans := (semantic.Builder{ScopeName: "gtrace-grok-test", ScopeVersion: "test"}).Build(turn)
+	if len(spans) != 3 || spans[0].Name != "invoke_agent" || spans[1].Name != "llm" || spans[2].Name != "assistant" {
+		t.Fatalf("unexpected single-call trace shape: %#v", spans)
+	}
+	for _, span := range spans[:2] {
+		if span.Attributes["gen_ai.usage.input_tokens"] != int64(17991) || span.Attributes["gen_ai.usage.output_tokens"] != int64(221) {
+			t.Fatalf("token usage missing from %s: %#v", span.Name, span.Attributes)
+		}
+	}
+	tokenPoints := 0
+	for _, metric := range coremetrics.Build(spans) {
+		if metric.Name == "gen_ai.client.token.usage" {
+			tokenPoints++
+		}
+	}
+	if tokenPoints != 2 {
+		t.Fatalf("expected one input and one output token metric, got %d", tokenPoints)
+	}
+}
+
+func TestReadTurnDoesNotCopyMultiCallAggregateToLLM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "updates.jsonl")
+	writeUpdates(t, path, []map[string]any{
+		xaiUpdate(410, "session-multi-usage", map[string]any{
+			"sessionUpdate": "turn_completed", "prompt_id": "prompt-multi-usage", "stop_reason": "end_turn", "agent_result": "answer",
+			"usage": map[string]any{
+				"inputTokens": 30, "outputTokens": 8, "modelCalls": 2, "apiDurationMs": 3000,
+				"modelUsage": map[string]any{"grok-4.6": map[string]any{"modelCalls": 2}},
+			},
+		}),
+	})
+	turn, ok, err := ReadTurn(Options{
+		TranscriptPath: path, SessionID: "session-multi-usage", TurnID: "prompt-multi-usage", CaptureContent: "preview", MaxChars: 100,
+		Events: []JournalEvent{{Event: "UserPromptSubmit", RecordedNano: time.Unix(409, 0).UnixNano(), Payload: map[string]any{"prompt": "hello"}}},
+	})
+	if err != nil || !ok {
+		t.Fatalf("ReadTurn() ok=%t err=%v", ok, err)
+	}
+	if len(turn.LLMCalls) != 0 {
+		t.Fatalf("multi-call aggregate was copied to an invented LLM call: %#v", turn.LLMCalls)
+	}
+	spans := (semantic.Builder{}).Build(turn)
+	if len(spans) != 2 || spans[0].Attributes["gen_ai.usage.input_tokens"] != int64(30) {
+		t.Fatalf("multi-call root aggregate was not preserved: %#v", spans)
+	}
+	for _, metric := range coremetrics.Build(spans) {
+		if metric.Name == "gen_ai.client.token.usage" {
+			t.Fatalf("multi-call aggregate created an unproven token metric: %#v", metric)
+		}
 	}
 }
 

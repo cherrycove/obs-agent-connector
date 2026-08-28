@@ -78,9 +78,9 @@ worker           -> exact transcript + matching TurnCompleted
 | Cache read/create token | `ResponseStarted.cache_read_input_tokens` / `cache_creation_input_tokens` | Call | Messages backend only |
 | Output/final usage | `ResponseCompleted.usage` | Call | Requires a stable response pair |
 | Finish reason | `ResponseCompleted.stop_reason` | Call | Verbatim when present |
-| Turn outcome | `TurnCompleted.stop_reason`, `agent_result`, and optional aggregate usage | Turn | Authoritative terminal evidence; aggregate usage is not duplicated across calls |
+| Turn outcome | `TurnCompleted.stop_reason`, `agent_result`, and optional aggregate usage | Turn | Authoritative terminal evidence; aggregate usage is written to the root span and is not duplicated across calls |
 
-`ResponseStarted` and `ResponseCompleted` are documented in the pinned source as Messages-backend-only. For another backend, the connector still emits the root, tools, and assistant output when supported, but omits unproven per-call model/token data. It never distributes aggregate turn tokens across multiple LLM calls.
+`ResponseStarted` and `ResponseCompleted` are documented in the pinned source as Messages-backend-only. Grok 1.0.5 can instead expose camelCase aggregate usage on `TurnCompleted`. The connector always keeps that reliable aggregate on the root span. It creates one `llm` span from the aggregate only when `modelCalls=1`, exactly one `modelUsage` entry confirms that call, usage is complete, and `apiDurationMs` provides the model-call boundary. Otherwise it omits unproven per-call token data and never distributes aggregate turn tokens across multiple LLM calls.
 
 ## 7. Tool, Skill, and Subagent Data
 

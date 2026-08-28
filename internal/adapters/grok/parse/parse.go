@@ -384,6 +384,11 @@ func normalize(
 		call := responseCall(response, options.TurnID, index, start, end)
 		turn.LLMCalls = append(turn.LLMCalls, call)
 	}
+	if len(turn.LLMCalls) == 0 && terminalRecord != nil {
+		if call, ok := singleCallFromTurnUsage(*terminalRecord, options.TurnID, start, end); ok {
+			turn.LLMCalls = append(turn.LLMCalls, call)
+		}
+	}
 
 	for _, raw := range tools {
 		toolStart, toolEnd, timingSource := toolWindow(raw, start, end)
@@ -496,6 +501,59 @@ func promptUsage(value any) model.Usage {
 		CacheCreateTokens: int64Value(firstNonNil(usage["cacheCreationTokens"], usage["cache_creation_tokens"])),
 		ReasoningTokens:   int64Value(firstNonNil(usage["reasoningTokens"], usage["reasoning_tokens"])),
 	}
+}
+
+func singleCallFromTurnUsage(record transcriptRecord, turnID string, parentStart, parentEnd int64) (model.LLMCall, bool) {
+	usageValue, ok := record.Params.Update["usage"].(map[string]any)
+	if !ok || boolValue(firstNonNil(usageValue["usageIsIncomplete"], usageValue["usage_is_incomplete"])) {
+		return model.LLMCall{}, false
+	}
+	if int64Value(firstNonNil(usageValue["modelCalls"], usageValue["model_calls"])) != 1 {
+		return model.LLMCall{}, false
+	}
+	durationMS := int64Value(firstNonNil(usageValue["apiDurationMs"], usageValue["api_duration_ms"]))
+	if durationMS <= 0 {
+		return model.LLMCall{}, false
+	}
+	usage := promptUsage(usageValue)
+	if usage == (model.Usage{}) {
+		return model.LLMCall{}, false
+	}
+	modelName, ok := singleUsageModel(firstNonNil(usageValue["modelUsage"], usageValue["model_usage"]))
+	if !ok {
+		return model.LLMCall{}, false
+	}
+
+	end := recordNano(record)
+	start := end - durationMS*int64(time.Millisecond)
+	start, end = childWindow(start, end, parentStart, parentEnd)
+	return model.LLMCall{
+		CallID:        derivedID(turnID, "llm", "turn-usage"),
+		StartUnixNano: start,
+		EndUnixNano:   end,
+		ResponseModel: modelName,
+		FinishReasons: stringSlice(stringValue(record.Params.Update, "stop_reason", "stopReason")),
+		Usage:         usage,
+		Status:        "ok",
+		ExtraAttributes: map[string]any{
+			"timing.source": "grok_turn_completed_usage",
+		},
+	}, true
+}
+
+func singleUsageModel(value any) (string, bool) {
+	models, ok := value.(map[string]any)
+	if !ok || len(models) != 1 {
+		return "", false
+	}
+	for name, raw := range models {
+		modelUsage, ok := raw.(map[string]any)
+		if !ok || int64Value(firstNonNil(modelUsage["modelCalls"], modelUsage["model_calls"])) != 1 {
+			return "", false
+		}
+		return strings.TrimSpace(name), strings.TrimSpace(name) != ""
+	}
+	return "", false
 }
 
 func findTerminalEvent(events []JournalEvent) terminalEvidence {

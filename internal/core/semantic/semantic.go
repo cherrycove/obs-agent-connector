@@ -59,6 +59,7 @@ func (b Builder) Build(turn model.Turn) []model.Span {
 	setAttr(rootAttrs, "tool_count", len(turn.ToolCalls))
 	mergeAttrs(rootAttrs, turn.ExtraAttributes)
 	removeUsageAttrs(rootAttrs)
+	addUsage(rootAttrs, turn.Usage)
 	setAttr(rootAttrs, "gen_ai.usage.credit", positiveFloat(turn.CreditUsage))
 
 	spans := []model.Span{makeSpan(
