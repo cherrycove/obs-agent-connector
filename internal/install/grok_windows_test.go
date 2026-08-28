@@ -10,6 +10,20 @@ import (
 	"testing"
 )
 
+func TestMain(m *testing.M) {
+	if os.Getenv("GO_WANT_GROK_HOOK_HELPER") == "1" {
+		marker := os.Getenv("HOOK_MARKER")
+		if marker == "" {
+			os.Exit(2)
+		}
+		if err := os.WriteFile(marker, []byte(strings.Join(os.Args[1:], " ")), 0o600); err != nil {
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 func TestGrokWindowsHookCommandExecutesPowerShell7(t *testing.T) {
 	program, err := exec.LookPath("pwsh.exe")
 	if err != nil {
@@ -38,19 +52,11 @@ func TestGrokWindowsHookCommandExecutesDefaultShell(t *testing.T) {
 }
 
 func TestGrokWindowsHookCommandExecutesCMD(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "Program Files", "Grok Hook Test")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	helper := filepath.Join(root, "hook-helper.cmd")
+	helper := grokWindowsHookHelperExecutable(t)
 	marker := filepath.Join(t.TempDir(), "cmd-args.txt")
-	script := "@echo off\r\n> \"%HOOK_MARKER%\" echo %*\r\n"
-	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	command := writeGrokWindowsHookCommand(t, helper, "cmd")
-	cmd := exec.Command("cmd.exe", "/D", "/S", "/C", command)
-	cmd.Env = append(os.Environ(), "HOOK_MARKER="+marker)
+	cmd := exec.Command("cmd.exe", "/C", command)
+	cmd.Env = grokWindowsHookHelperEnvironment(marker)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cmd Hook command failed: %v\n%s", err, output)
 	}
@@ -62,20 +68,11 @@ func TestGrokWindowsHookCommandExecutesGitBash(t *testing.T) {
 	if program == "" {
 		t.Skip("Git Bash is not installed")
 	}
-	root := filepath.Join(t.TempDir(), "Program Files", "Grok Hook Test")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	helper := filepath.Join(root, "hook-helper.sh")
+	helper := grokWindowsHookHelperExecutable(t)
 	marker := filepath.Join(t.TempDir(), "bash-args.txt")
-	script := "#!/usr/bin/env bash\nprintf '%s' \"$*\" > \"$HOOK_MARKER\"\n"
-	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	command := writeGrokWindowsHookCommand(t, helper, "bash")
 	cmd := exec.Command(program, "-c", command)
-	cmd.Env = append(os.Environ(),
-		"HOOK_MARKER="+strings.ReplaceAll(marker, `\`, "/"),
+	cmd.Env = append(grokWindowsHookHelperEnvironment(strings.ReplaceAll(marker, `\`, "/")),
 		"MSYS_NO_PATHCONV=1",
 		"MSYS2_ARG_CONV_EXCL=*",
 	)
@@ -87,29 +84,43 @@ func TestGrokWindowsHookCommandExecutesGitBash(t *testing.T) {
 
 func testGrokPowerShellHookCommand(t *testing.T, program, requestedShell string) {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), "Program Files", "Grok Hook Test")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	helper := filepath.Join(root, "hook-helper.ps1")
+	helper := grokWindowsHookHelperExecutable(t)
 	markerName := requestedShell
 	if markerName == "" {
 		markerName = "default"
 	}
 	marker := filepath.Join(t.TempDir(), markerName+"-args.txt")
-	script := `param([Parameter(ValueFromRemainingArguments=$true)][string[]]$HookArgs)
-[System.IO.File]::WriteAllText($env:HOOK_MARKER, ($HookArgs -join ' '))
-`
-	if err := os.WriteFile(helper, []byte(script), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	command := writeGrokWindowsHookCommand(t, helper, requestedShell)
 	cmd := exec.Command(program, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command)
-	cmd.Env = append(os.Environ(), "HOOK_MARKER="+marker)
+	cmd.Env = grokWindowsHookHelperEnvironment(marker)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s Hook command failed: %v\n%s", requestedShell, err, output)
 	}
 	assertGrokHookArguments(t, marker)
+}
+
+func grokWindowsHookHelperExecutable(t *testing.T) string {
+	t.Helper()
+	source, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "Program Files", "Grok Hook Test")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(root, "hook-helper.exe")
+	if err := copyExecutable(source, destination); err != nil {
+		t.Fatal(err)
+	}
+	return destination
+}
+
+func grokWindowsHookHelperEnvironment(marker string) []string {
+	return append(os.Environ(),
+		"GO_WANT_GROK_HOOK_HELPER=1",
+		"HOOK_MARKER="+marker,
+	)
 }
 
 func writeGrokWindowsHookCommand(t *testing.T, executable, requestedShell string) string {
