@@ -31,6 +31,25 @@ type claimRecord struct {
 	PID         int    `json:"pid"`
 }
 
+func (m Manager) Completed(sessionID, turnID string) (bool, error) {
+	if strings.TrimSpace(m.Root) == "" {
+		return false, errors.New("state root is empty")
+	}
+	_, err := os.Stat(filepath.Join(m.turnDir(sessionID, turnID), "completed.json"))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (m Manager) turnDir(sessionID, turnID string) string {
+	key := sha256.Sum256([]byte(sessionID + "\x00" + turnID))
+	return filepath.Join(m.Root, hex.EncodeToString(key[:]))
+}
+
 func (m Manager) Claim(sessionID, turnID, fingerprint string) (*Claim, error) {
 	if strings.TrimSpace(m.Root) == "" {
 		return nil, errors.New("state root is empty")
@@ -43,8 +62,7 @@ func (m Manager) Claim(sessionID, turnID, fingerprint string) (*Claim, error) {
 	if staleAfter <= 0 {
 		staleAfter = 10 * time.Minute
 	}
-	key := sha256.Sum256([]byte(sessionID + "\x00" + turnID))
-	dir := filepath.Join(m.Root, hex.EncodeToString(key[:]))
+	dir := m.turnDir(sessionID, turnID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}

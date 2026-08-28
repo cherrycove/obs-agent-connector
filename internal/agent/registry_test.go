@@ -15,6 +15,7 @@ func TestRegisteredPluginNames(t *testing.T) {
 		"cursor":    "cursor-otel-plugin",
 		"dcode":     "obs-agent-connector",
 		"dsh":       "dsh-otel-plugin",
+		"grok":      "obs-agent-connector",
 		"hermes":    "hermes-otel-plugin",
 		"kiro":      "obs-agent-connector",
 		"opencode":  "opencode-otel-plugin",
@@ -37,7 +38,7 @@ func TestRegisteredPluginNames(t *testing.T) {
 }
 
 func TestSupportedNamesForWindows(t *testing.T) {
-	expected := []string{"claude", "codebuddy", "codex", "cursor", "dcode", "dsh", "kiro", "openclaw", "opencode", "qoder", "workbuddy"}
+	expected := []string{"claude", "codebuddy", "codex", "cursor", "dcode", "dsh", "grok", "kiro", "openclaw", "opencode", "qoder", "workbuddy"}
 	got := SupportedNames("windows")
 	if strings.Join(got, ",") != strings.Join(expected, ",") {
 		t.Fatalf("expected Windows supported names %v, got %v", expected, got)
@@ -45,7 +46,7 @@ func TestSupportedNamesForWindows(t *testing.T) {
 }
 
 func TestSupportedNamesForLinux(t *testing.T) {
-	expected := []string{"claude", "codebuddy", "codex", "cursor", "dcode", "dsh", "hermes", "kiro", "openclaw", "opencode", "qoder"}
+	expected := []string{"claude", "codebuddy", "codex", "cursor", "dcode", "dsh", "grok", "hermes", "kiro", "openclaw", "opencode", "qoder"}
 	got := SupportedNames("linux")
 	if strings.Join(got, ",") != strings.Join(expected, ",") {
 		t.Fatalf("expected Linux supported names %v, got %v", expected, got)
@@ -60,6 +61,7 @@ func TestWindowsSupportFlags(t *testing.T) {
 		"cursor":    true,
 		"dcode":     true,
 		"dsh":       true,
+		"grok":      true,
 		"hermes":    false,
 		"kiro":      true,
 		"opencode":  true,
@@ -78,7 +80,7 @@ func TestWindowsSupportFlags(t *testing.T) {
 }
 
 func TestClaudeAndCodexUseBuiltinRuntime(t *testing.T) {
-	for _, name := range []string{"claude", "codebuddy", "codex", "dcode"} {
+	for _, name := range []string{"claude", "codebuddy", "codex", "dcode", "grok"} {
 		selected, err := Select(name)
 		if err != nil {
 			t.Fatal(err)
@@ -173,6 +175,7 @@ func TestLinuxSupportFlags(t *testing.T) {
 		"cursor":    true,
 		"dcode":     true,
 		"dsh":       true,
+		"grok":      true,
 		"hermes":    true,
 		"kiro":      true,
 		"opencode":  true,

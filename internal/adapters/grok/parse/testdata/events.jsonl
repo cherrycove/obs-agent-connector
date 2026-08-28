@@ -1,0 +1,8 @@
+{"ts":"2026-08-27T03:27:08.347Z","type":"turn_started","session_id":"synthetic-events-session","turn_number":7,"model_id":"grok-4.6","yolo_mode":false,"conversation_message_count":12,"session_relationship":"primary","schema_version":"1.0"}
+{"ts":"2026-08-27T03:27:08.770Z","type":"loop_started","loop_index":0}
+{"ts":"2026-08-27T03:27:08.771Z","type":"phase_changed","phase":"waiting_for_model"}
+{"ts":"2026-08-27T03:27:20.639Z","type":"phase_changed","phase":"tool_execution"}
+{"ts":"2026-08-27T03:27:45.562Z","type":"loop_started","loop_index":1}
+{"ts":"2026-08-27T03:27:45.563Z","type":"phase_changed","phase":"waiting_for_model"}
+{"ts":"2026-08-27T03:27:56.472Z","type":"first_token"}
+{"ts":"2026-08-27T03:28:03.172Z","type":"turn_ended","outcome":"completed"}

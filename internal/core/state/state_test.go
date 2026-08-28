@@ -9,6 +9,9 @@ import (
 
 func TestClaimTracksSignalsAndCompletesOnlyAfterBoth(t *testing.T) {
 	manager := Manager{Root: filepath.Join(t.TempDir(), "state")}
+	if completed, err := manager.Completed("session", "turn"); err != nil || completed {
+		t.Fatalf("new turn completion state = %t, %v", completed, err)
+	}
 	claim, err := manager.Claim("session", "turn", "fingerprint")
 	if err != nil || claim == nil {
 		t.Fatalf("claim failed: %v", err)
@@ -24,6 +27,9 @@ func TestClaimTracksSignalsAndCompletesOnlyAfterBoth(t *testing.T) {
 	}
 	if err := claim.Complete("traces", "metrics"); err != nil {
 		t.Fatal(err)
+	}
+	if completed, err := manager.Completed("session", "turn"); err != nil || !completed {
+		t.Fatalf("completed turn state = %t, %v", completed, err)
 	}
 	if _, err := manager.Claim("session", "turn", "fingerprint"); !errors.Is(err, ErrAlreadyCompleted) {
 		t.Fatalf("expected completed error, got %v", err)
