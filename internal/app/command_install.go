@@ -124,7 +124,6 @@ func install(args []string) error {
 	fmt.Println("Install plan:")
 	targets := make([]string, 0, len(selected))
 	for _, p := range selected {
-		p = agent.Resolve(p)
 		if p.IsBuiltin() {
 			targets = append(targets, fmt.Sprintf("%s (built into obs-agent-connector)", p.Name))
 			continue
@@ -157,7 +156,6 @@ func install(args []string) error {
 		fmt.Println()
 		fmt.Println("Command preview:")
 		for _, p := range selected {
-			p = agent.Resolve(p)
 			if p.IsBuiltin() {
 				fmt.Printf("register %s hook with the current obs-agent-connector runtime\n", p.Name)
 				continue
@@ -181,7 +179,6 @@ func install(args []string) error {
 	}
 
 	for _, p := range selected {
-		p = agent.Resolve(p)
 		if err := installOne(pluginDownload, p, input); err != nil {
 			return err
 		}

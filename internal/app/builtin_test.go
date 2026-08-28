@@ -390,6 +390,43 @@ func TestDcodeInstallUsesBuiltin(t *testing.T) {
 	}
 }
 
+func TestDshInstallUsesCachedCommandForDryRun(t *testing.T) {
+	home := t.TempDir()
+	cacheBin := filepath.Join(home, ".npm", "_npx", "cache-id", "node_modules", ".bin")
+	if err := os.MkdirAll(cacheBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheBin, "dsh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pathDir := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", pathDir)
+	t.Setenv("DSH_BINARY", "")
+	t.Setenv("DEEPSEEK_HARNESS_BINARY", "")
+	t.Setenv("DSH_CLI_PATH", "")
+	configPath := filepath.Join(home, ".obs-agent-connector", "config.json")
+	t.Setenv("OBS_AGENT_CONNECTOR_CONFIG", configPath)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"endpoint":"https://example.com","x_token":"synthetic-secret","plugin_source":"github","plugin_base_url":"https://github.com/GuanceCloud"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	output := captureStdout(t, func() {
+		if err := install([]string{"dsh", "--dry-run", "--yes"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(output, "dsh-otel-plugin/releases/latest/download/install-release.sh") {
+		t.Fatalf("unexpected dsh install plan: %s", output)
+	}
+	if !strings.Contains(output, "PATH="+cacheBin+string(os.PathListSeparator)+pathDir) {
+		t.Fatalf("expected dsh command preview to preserve resolved PATH: %s", output)
+	}
+}
+
 func TestBuiltinInstallReportsKiroAndDcodeTelemetryBoundaries(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

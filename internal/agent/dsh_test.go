@@ -44,12 +44,13 @@ func TestDshInstallRequiresCLI(t *testing.T) {
 func TestDshInstallUsesResolvedCommand(t *testing.T) {
 	home := t.TempDir()
 	binDir := t.TempDir()
+	pathDir := t.TempDir()
 	command := filepath.Join(binDir, "dsh")
 	if err := os.WriteFile(command, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	t.Setenv("PATH", t.TempDir())
+	t.Setenv("PATH", pathDir)
 	t.Setenv("DSH_BINARY", command)
 	t.Setenv("DEEPSEEK_HARNESS_BINARY", "")
 	t.Setenv("DSH_CLI_PATH", "")
@@ -60,5 +61,39 @@ func TestDshInstallUsesResolvedCommand(t *testing.T) {
 	}
 	if resolved.AgentCommand != command {
 		t.Fatalf("expected resolved DSH command %q, got %q", command, resolved.AgentCommand)
+	}
+	wantPath := "PATH=" + binDir + string(os.PathListSeparator) + pathDir
+	if got := resolved.Env[len(resolved.Env)-1]; got != wantPath {
+		t.Fatalf("expected injected PATH %q, got %q", wantPath, got)
+	}
+}
+
+func TestDshInstallUsesCachedNpxCommand(t *testing.T) {
+	home := t.TempDir()
+	cacheBin := filepath.Join(home, ".npm", "_npx", "cache-id", "node_modules", ".bin")
+	command := filepath.Join(cacheBin, "dsh")
+	if err := os.MkdirAll(cacheBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(command, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pathDir := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", pathDir)
+	t.Setenv("DSH_BINARY", "")
+	t.Setenv("DEEPSEEK_HARNESS_BINARY", "")
+	t.Setenv("DSH_CLI_PATH", "")
+
+	resolved, err := resolveDshForInstall(dshPlugin())
+	if err != nil {
+		t.Fatalf("expected cached DSH command to resolve: %v", err)
+	}
+	if resolved.AgentCommand != command {
+		t.Fatalf("expected cached DSH command %q, got %q", command, resolved.AgentCommand)
+	}
+	wantPath := "PATH=" + cacheBin + string(os.PathListSeparator) + pathDir
+	if got := resolved.Env[len(resolved.Env)-1]; got != wantPath {
+		t.Fatalf("expected injected PATH %q, got %q", wantPath, got)
 	}
 }
