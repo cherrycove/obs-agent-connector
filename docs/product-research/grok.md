@@ -32,11 +32,12 @@ The connector never returns a blocking decision. Each Hook process performs only
 | --- | --- | --- | --- | --- |
 | Hook | stdin | camelCase JSON | One connector process per event | Prompt, tool arguments/results, errors, final response |
 | Session update stream | Hook `transcriptPath`; normally `~/.grok/sessions/<encoded-cwd>/<session-id>/updates.jsonl` | JSONL envelopes with Unix-second timestamp, method, and params | Append-only authoritative conversation/session stream | User, assistant, tool, model, and usage data |
+| LLM conversation history | `chat_history.jsonl` next to the Hook `transcriptPath` | JSONL conversation items | Persisted input/output history used for LLM API calls | User messages, assistant messages, tool-call arguments/results, and model ID; no persisted per-call usage |
 | Session event stream | `events.jsonl` next to the Hook `transcriptPath` | `xai-grok-session-events` JSONL, schema version `1.0`, with RFC 3339 timestamps | Append-only turn, loop, phase, first-token, tool, and terminal events | Session ID, model, timing, tool names, and outcomes |
 | Connector journal | `~/.obs-agent-connector/grok/state/journal/` | Sanitized bounded JSON | Appended by Hooks and scoped to one turn | Capture-mode-limited Hook evidence |
 | Connector queue/upload state | `~/.obs-agent-connector/grok/state/` | JSON | Persisted before detached processing and upload | Normalized terminal Turn and per-signal delivery markers |
 
-The connector reads xAI `_x.ai/session/update` envelopes from `updates.jsonl`. The current extension surface includes durable `TurnCompleted` records and Messages-backend `ResponseStarted` / `ResponseCompleted` records. It also derives the sibling `events.jsonl` path and reads complete [`xai-grok-session-events` schema `1.0` turn blocks](https://github.com/xai-org/grok-build/blob/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4/crates/codegen/xai-grok-session-events/src/types.rs). Unknown records and an incomplete final JSONL line are ignored rather than making the Hook fail.
+The connector reads xAI `_x.ai/session/update` envelopes from `updates.jsonl`. The current extension surface includes durable `TurnCompleted` records and Messages-backend `ResponseStarted` / `ResponseCompleted` records. It also derives the sibling `events.jsonl` path and reads complete [`xai-grok-session-events` schema `1.0` turn blocks](https://github.com/xai-org/grok-build/blob/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4/crates/codegen/xai-grok-session-events/src/types.rs). For captured content, a turn's `session/update` `promptIndex` selects the matching block in `chat_history.jsonl`; the number of assistant responses must exactly match the already-proven LLM call count before any call is enriched. Unknown records and an incomplete final JSONL line are ignored rather than making the Hook fail.
 
 ## 4. Identifiers and Correlation
 
@@ -83,6 +84,7 @@ worker           -> exact transcript + matching TurnCompleted
 | TTFT | schema `1.0` `first_token` following the active `waiting_for_model` phase | Call | Omitted when a call produces no text/reasoning token before a tool request |
 | Model | schema `1.0` `turn_started.model_id` | Turn and validated calls | Used as the request model for every event-derived call in that turn |
 | Turn outcome | `TurnCompleted.stop_reason`, `agent_result`, and optional aggregate usage | Turn | Authoritative terminal evidence; aggregate usage is written to the root span and is not duplicated across calls |
+| LLM input/output | prompt-indexed block in `chat_history.jsonl` | Call | User input populates the first call, tool results populate subsequent calls, and each assistant item populates one output; accepted only on an exact call-count match |
 
 `ResponseStarted` and `ResponseCompleted` are documented in the pinned source as Messages-backend-only. The connector uses the following strict precedence:
 
@@ -90,6 +92,8 @@ worker           -> exact transcript + matching TurnCompleted
 2. Without exact response pairs, exactly one complete schema `1.0` event turn must match the Hook session and both Hook endpoints within a two-second delivery-skew bound. The root expands to the official event turn boundaries. Its `waiting_for_model` phases provide real call boundaries and `first_token` provides TTFT. The `TurnCompleted.usage.modelCalls` count must equal the number of event-derived calls. When that count is exactly one, the turn prompt, final output, and aggregate usage also belong to the sole call and populate its LLM span. With multiple calls, aggregate tokens remain only on the root because the event stream has no per-call token split.
 3. Without usable event evidence, one `llm` span can still come from complete aggregate usage when `modelCalls=1`, exactly one `modelUsage` entry confirms that call, and `apiDurationMs` provides its duration.
 4. For multiple calls, the last fallback requires complete aggregate usage, one model entry whose count matches `modelCalls`, positive `apiDurationMs`, and exactly `modelCalls-1` non-overlapping clusters formed from complete tool intervals. It places one estimated LLM call in every causal gap, fits the aggregate API duration without crossing a tool cluster, associates every clustered tool with the preceding estimated call, and marks the spans with `timing.source=grok_hook_boundaries`, `gtrace.synthetic=true`, and `gtrace.timing.estimated=true`. Any count, interval, model, or duration mismatch disables this fallback.
+
+After call boundaries are established, `chat_history.jsonl` enriches each call with the real incremental input and assistant output. Tool-call arguments are parsed before recursive secret redaction, and all content still follows `captureContent` and `maxChars`. The persisted assistant records contain model identity and content but no per-call token usage.
 
 The connector never distributes aggregate turn tokens across multiple event-derived or synthetic calls. This prevents unproven per-call token attributes and token metrics while preserving the reliable aggregate on `invoke_agent`. The root also exposes `usage_input_tokens` and `usage_output_tokens` compatibility aliases for Agent Monitoring views while retaining the canonical GenAI attributes as the semantic source of truth.
 
@@ -131,6 +135,7 @@ The connector never distributes aggregate turn tokens across multiple event-deri
 | --- | --- | --- | --- |
 | `UserPromptSubmit.prompt` | `Turn.InputMessages` | `invoke_agent` input | Redacted and bounded by capture mode |
 | Response start/completion pair | `LLMCall` | `llm` | Per-call model and tokens only with stable evidence |
+| prompt-indexed `chat_history.jsonl` block | `LLMCall` content | `llm` input/output | Exact assistant-count match required; never used as token evidence |
 | schema `1.0` event turn | `LLMCall` | `llm` | Real phase boundary and optional TTFT; aggregate tokens stay on root |
 | validated aggregate usage plus tool clusters | `LLMCall` | `llm` | Explicitly synthetic estimated timing; no per-call tokens |
 | `PreToolUse` plus terminal tool event | `ToolCall` | `tool:<name>` | Tool ID correlation; explicit failure/denial preserved |
@@ -167,6 +172,7 @@ The connector does not enable, disable, or rewrite that native configuration. Bo
 | --- | --- | --- | --- |
 | Hook or transcript schema changes after the pinned commit | New records may be skipped | Ignore unknown fields and fail open; require terminal evidence | Revalidate on Grok upgrades |
 | Response records absent on a non-Messages backend | Per-call token usage remains unavailable | Use unambiguous schema `1.0` event timing when available; otherwise use the marked Hook-cluster estimate only when every evidence gate passes | Adopt a future public per-call usage record |
+| Agent Monitoring summary reads token fields only from `llm` spans | Multi-call trace summary can show `-` even though the root contains the exact turn aggregate | Keep the aggregate on `invoke_agent`; do not assign it to an arbitrary call or duplicate it across calls | Make the view fall back to root aggregate usage for multi-call turns |
 | Event schema changes or multiple event turns match one Hook window | Event-derived call boundaries become ambiguous | Accept only schema `1.0` and exactly one session turn whose endpoints satisfy the bounded Hook-delivery skew; fall back conservatively or omit calls | Revalidate before accepting a new schema |
 | Stop arrives before transcript durability | Turn may initially be incomplete | Keep queued work and retry on later Hooks | Validate polling bounds with live sessions |
 | Replaced turn emits no cancellation Hook | Observe Hook alone can miss it | Scan `TurnCompleted` on prompt, idle, and session recovery events | Exercise live cancel-and-send behavior |

@@ -6,7 +6,7 @@
 
 ## Conclusion
 
-The Grok Hook captured the turn, but six older queue entries starved the detached worker limit. Manually processing the newest queue uploaded the missing turn, and the queue scheduler was then fixed to prioritize recent turns and discard queues whose turn already has a completion marker.
+Two independent issues were confirmed. Queue starvation originally delayed the upload and has been fixed. The uploaded multi-call trace contains the exact turn-level token aggregate on `invoke_agent`, but the Agent Monitoring summary still renders `-` because the two `llm` spans have no provable per-call token split. The selected LLM spans also lacked content because the first implementation did not replay Grok's separate `chat_history.jsonl` conversation file.
 
 ## Evidence
 
@@ -19,10 +19,11 @@ The Grok Hook captured the turn, but six older queue entries starved the detache
   - `usage_input_tokens=42528`
   - `usage_output_tokens=1176`
 - Input and output previews are present on the uploaded trace.
+- Grok's local `chat_history.jsonl` contains two assistant responses for this prompt: the first emits three `web_search` tool calls, and the second emits the final answer. Its persisted assistant records contain no usage field.
 
 ## Inference
 
-The missing Trace was caused by local queue starvation, not endpoint authentication, Hook registration, transcript parsing, or backend rejection.
+The missing Trace was caused by local queue starvation, not endpoint authentication, Hook registration, transcript parsing, or backend rejection. The token summary is now a view-compatibility gap rather than missing connector data: displaying the aggregate on either child would misattribute one turn's total to one call, while copying it to both would double count. The missing LLM input/output was a connector parsing gap and can be corrected from prompt-indexed chat history without inventing data.
 
 ## Remediation
 
@@ -30,4 +31,5 @@ The missing Trace was caused by local queue starvation, not endpoint authenticat
 - Skip completed turns during transcript recovery.
 - Remove an already-completed queue before attempting transcript parsing.
 - Added race-tested regression coverage for queue ordering and completed-queue cleanup.
-
+- Correlate the turn's `promptIndex` to `chat_history.jsonl`, require an exact assistant/call-count match, and attach sanitized incremental inputs and outputs to each LLM span.
+- Preserve multi-call tokens only on the root until Grok exposes per-call usage; update the Agent Monitoring waterfall to fall back to root aggregate usage when child usage is unavailable.

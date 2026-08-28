@@ -409,6 +409,22 @@ func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
 	if turn.Usage.InputTokens != 38315 || turn.Usage.OutputTokens != 155 || turn.Usage.ReasoningTokens != 61 {
 		t.Fatalf("aggregate usage was not retained on the root: %#v", turn.Usage)
 	}
+	if turn.LLMCalls[0].InputMessages == nil || turn.LLMCalls[0].OutputMessages == nil || turn.LLMCalls[0].OutputKind != "tool_call" {
+		t.Fatalf("first LLM call was not enriched from chat history: %#v", turn.LLMCalls[0])
+	}
+	if turn.LLMCalls[1].InputMessages == nil || turn.LLMCalls[1].OutputMessages == nil || turn.LLMCalls[1].OutputKind != "text" {
+		t.Fatalf("second LLM call was not enriched from chat history: %#v", turn.LLMCalls[1])
+	}
+	if turn.LLMCalls[0].ExtraAttributes["content.source"] != "grok_chat_history" || turn.LLMCalls[1].ExtraAttributes["content.source"] != "grok_chat_history" {
+		t.Fatalf("chat history evidence was not marked: %#v", turn.LLMCalls)
+	}
+	encodedMessages, err := json.Marshal(turn.LLMCalls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedMessages), "fixture-only") || !strings.Contains(string(encodedMessages), "[REDACTED]") {
+		t.Fatalf("chat history tool arguments were not recursively sanitized: %s", encodedMessages)
+	}
 	for _, tool := range turn.ToolCalls {
 		if tool.TriggeringLLMCall != turn.LLMCalls[0].CallID {
 			t.Fatalf("parallel tool was not associated with the preceding LLM: %#v", tool)
@@ -418,6 +434,10 @@ func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
 	spans := (semantic.Builder{ScopeName: "gtrace-grok-test", ScopeVersion: "test"}).Build(turn)
 	if len(spans) != 7 || spans[0].Name != "invoke_agent" || spans[1].Name != "llm" || spans[2].Name != "llm" || spans[6].Name != "assistant" {
 		t.Fatalf("unexpected event-derived span tree: %#v", spans)
+	}
+	if spans[1].Attributes["gen_ai.input.messages"] == nil || spans[1].Attributes["gen_ai.output.messages"] == nil || spans[1].Attributes["output_kind"] != "tool_call" ||
+		spans[2].Attributes["gen_ai.input.messages"] == nil || spans[2].Attributes["gen_ai.output.messages"] == nil || spans[2].Attributes["output_kind"] != "text" {
+		t.Fatalf("chat history content was not emitted on both LLM spans: %#v %#v", spans[1].Attributes, spans[2].Attributes)
 	}
 	rootID := spans[0].SpanID
 	triggerID := spans[1].SpanID

@@ -144,6 +144,9 @@ func ReadTurn(options Options) (model.Turn, bool, error) {
 	}
 
 	turn := normalize(options, prompt, output, stopReason, hookTerminal, terminalRecord, responses, eventTurns, tools)
+	if options.CaptureContent != "none" && terminalRecord != nil && strings.TrimSpace(options.TranscriptPath) != "" {
+		enrichCallsFromChatHistory(&turn, options.TranscriptPath, *terminalRecord, options.MaxChars)
+	}
 	if turn.FinalStatus == model.FinalStatusUnset {
 		return model.Turn{}, false, nil
 	}
