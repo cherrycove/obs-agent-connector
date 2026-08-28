@@ -418,6 +418,14 @@ func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
 	if turn.LLMCalls[0].ExtraAttributes["content.source"] != "grok_chat_history" || turn.LLMCalls[1].ExtraAttributes["content.source"] != "grok_chat_history" {
 		t.Fatalf("chat history evidence was not marked: %#v", turn.LLMCalls)
 	}
+	if len(turn.AssistantOutputs) != 1 {
+		t.Fatalf("tool-call-only response created an assistant or terminal output was duplicated: %#v", turn.AssistantOutputs)
+	}
+	assistant := turn.AssistantOutputs[0]
+	if assistant.OutputPreview != "Synthetic answer." || assistant.ResponseModel != "grok-4.6" ||
+		assistant.ExtraAttributes["content.source"] != "grok_chat_history" || assistant.ExtraAttributes["timing.source"] != "grok_llm_boundary" {
+		t.Fatalf("final visible assistant was not enriched from its LLM response: %#v", assistant)
+	}
 	encodedMessages, err := json.Marshal(turn.LLMCalls)
 	if err != nil {
 		t.Fatal(err)
@@ -439,6 +447,28 @@ func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
 		spans[2].Attributes["gen_ai.input.messages"] == nil || spans[2].Attributes["gen_ai.output.messages"] == nil || spans[2].Attributes["output_kind"] != "text" {
 		t.Fatalf("chat history content was not emitted on both LLM spans: %#v %#v", spans[1].Attributes, spans[2].Attributes)
 	}
+	var gtraceUsage map[string]int64
+	rawGTraceUsage, ok := spans[0].Attributes["gtrace.usage"].(string)
+	if !ok {
+		t.Fatalf("root GTrace usage compatibility payload is missing: %#v", spans[0].Attributes)
+	}
+	if err := json.Unmarshal([]byte(rawGTraceUsage), &gtraceUsage); err != nil {
+		t.Fatalf("root GTrace usage compatibility payload is invalid: %v (%#v)", err, spans[0].Attributes)
+	}
+	if gtraceUsage["input"] != 38315 || gtraceUsage["output"] != 155 || gtraceUsage["total"] != 38470 {
+		t.Fatalf("root GTrace usage compatibility payload is incomplete: %#v", gtraceUsage)
+	}
+	for _, llm := range spans[1:3] {
+		if llm.Attributes["gtrace.observation.type"] != "llm" || llm.Attributes["gtrace.observation.input"] == nil || llm.Attributes["gtrace.observation.output"] == nil {
+			t.Fatalf("LLM GTrace input/output compatibility fields are missing: %#v", llm.Attributes)
+		}
+		if llm.Attributes["gtrace.usage"] != nil {
+			t.Fatalf("turn aggregate usage was copied to an individual LLM: %#v", llm.Attributes)
+		}
+	}
+	if spans[6].Attributes["gtrace.observation.type"] != "assistant" || spans[6].Attributes["gtrace.observation.output"] != "Synthetic answer." {
+		t.Fatalf("assistant GTrace output compatibility fields are missing: %#v", spans[6].Attributes)
+	}
 	rootID := spans[0].SpanID
 	triggerID := spans[1].SpanID
 	for _, span := range spans[1:] {
@@ -453,6 +483,112 @@ func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
 		if metric.Name == "gen_ai.client.token.usage" {
 			t.Fatalf("root aggregate tokens leaked into an event-derived per-call metric: %#v", metric)
 		}
+	}
+}
+
+func TestReadTurnEmitsIntermediateVisibleChatHistoryAssistant(t *testing.T) {
+	tempDir := t.TempDir()
+	fixtures := map[string]string{
+		"updates_turn_usage_multi_tools.jsonl": "updates.jsonl",
+		"events.jsonl":                         "events.jsonl",
+		"chat_history_intermediate_text.jsonl": "chat_history.jsonl",
+	}
+	for source, destination := range fixtures {
+		body, err := os.ReadFile(filepath.Join("testdata", source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tempDir, destination), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	turn, ok, err := ReadTurn(Options{
+		TranscriptPath: filepath.Join(tempDir, "updates.jsonl"),
+		SessionID:      "synthetic-events-session",
+		TurnID:         "synthetic-events-prompt",
+		CaptureContent: "preview",
+		MaxChars:       1_000,
+		Events:         readJournalFixture(t, filepath.Join("testdata", "journal_turn_usage_multi_tools.jsonl")),
+	})
+	if err != nil || !ok {
+		t.Fatalf("ReadTurn() ok=%t err=%v", ok, err)
+	}
+	if len(turn.AssistantOutputs) != 2 {
+		t.Fatalf("expected one intermediate and one terminal assistant, got %#v", turn.AssistantOutputs)
+	}
+	first := turn.AssistantOutputs[0]
+	if first.OutputPreview != "I will check the synthetic sources." || first.ResponseModel != "grok-4.6" ||
+		first.StartUnixNano != turn.LLMCalls[0].EndUnixNano || first.EndUnixNano != first.StartUnixNano+1 {
+		t.Fatalf("intermediate visible assistant lacked matching content, model, or timing: %#v", first)
+	}
+	final := turn.AssistantOutputs[1]
+	if final.OutputPreview != "Synthetic answer." || final.ResponseModel != "grok-4.6" {
+		t.Fatalf("terminal assistant was duplicated or lost its persisted evidence: %#v", turn.AssistantOutputs)
+	}
+
+	spans := (semantic.Builder{}).Build(turn)
+	assistantSpans := 0
+	for _, span := range spans {
+		if span.Name != "assistant" {
+			continue
+		}
+		assistantSpans++
+		if span.Attributes["gen_ai.usage.input_tokens"] != nil || span.Attributes["gen_ai.usage.output_tokens"] != nil {
+			t.Fatalf("assistant span carried fabricated token usage: %#v", span.Attributes)
+		}
+	}
+	if assistantSpans != 2 {
+		t.Fatalf("expected two assistant spans, got %d: %#v", assistantSpans, spans)
+	}
+}
+
+func TestEnrichAssistantOutputsDoesNotOverwriteDifferentTerminalOutput(t *testing.T) {
+	turn := model.Turn{
+		StartUnixNano: 100,
+		EndUnixNano:   1_000,
+		LLMCalls: []model.LLMCall{
+			{StartUnixNano: 200, EndUnixNano: 300, ResponseModel: "grok-test", Status: "ok"},
+			{StartUnixNano: 400, EndUnixNano: 500, ResponseModel: "grok-test", Status: "ok"},
+		},
+		AssistantOutputs: []model.AssistantOutput{{
+			StartUnixNano: 999,
+			EndUnixNano:   1_000,
+			OutputPreview: "Terminal output supplied by the completion event.",
+			OutputKind:    "text",
+			Status:        "ok",
+		}},
+	}
+	calls := []chatHistoryCall{
+		{
+			AssistantOutputMessages: []any{map[string]any{"role": "assistant", "parts": []any{map[string]any{"type": "text", "content": "Intermediate note."}}}},
+			AssistantOutputPreview:  "Intermediate note.",
+		},
+		{},
+	}
+
+	enrichAssistantOutputs(&turn, calls)
+	if len(turn.AssistantOutputs) != 2 {
+		t.Fatalf("expected distinct intermediate and terminal assistants, got %#v", turn.AssistantOutputs)
+	}
+	if turn.AssistantOutputs[0].OutputPreview != "Intermediate note." || turn.AssistantOutputs[1].OutputPreview != "Terminal output supplied by the completion event." {
+		t.Fatalf("terminal assistant was overwritten by an unrelated intermediate response: %#v", turn.AssistantOutputs)
+	}
+}
+
+func TestChatAssistantMessageSanitizesVisibleText(t *testing.T) {
+	_, assistantOutput, assistantPreview, _ := chatAssistantMessage(chatHistoryItem{
+		Content: "password=fixture-only-secret Synthetic answer.",
+	}, 1_000)
+	encoded, err := json.Marshal(assistantOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "fixture-only-secret") || strings.Contains(assistantPreview, "fixture-only-secret") {
+		t.Fatalf("assistant content was not sanitized: messages=%s preview=%q", encoded, assistantPreview)
+	}
+	if !strings.Contains(string(encoded), "[REDACTED]") || !strings.Contains(assistantPreview, "[REDACTED]") {
+		t.Fatalf("assistant redaction marker is missing: messages=%s preview=%q", encoded, assistantPreview)
 	}
 }
 

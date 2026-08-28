@@ -28,13 +28,15 @@ type chatHistoryToolCall struct {
 }
 
 type chatHistoryCall struct {
-	ModelID        string
-	InputMessages  any
-	OutputMessages any
-	InputPreview   string
-	OutputPreview  string
-	OutputKind     string
-	ToolCallIDs    []string
+	ModelID                 string
+	InputMessages           any
+	OutputMessages          any
+	InputPreview            string
+	OutputPreview           string
+	OutputKind              string
+	ToolCallIDs             []string
+	AssistantOutputMessages any
+	AssistantOutputPreview  string
 }
 
 // enrichCallsFromChatHistory maps the persisted conversation for one prompt to
@@ -85,6 +87,92 @@ func enrichCallsFromChatHistory(turn *model.Turn, transcriptPath string, termina
 			turn.ToolCalls[index].TriggeringLLMCall = callID
 		}
 	}
+	enrichAssistantOutputs(turn, calls)
+}
+
+// enrichAssistantOutputs emits a local assistant event only when the persisted
+// response contains visible text. Tool-call-only responses remain represented
+// by their LLM and tool spans. The terminal assistant created from
+// TurnCompleted is enriched with the last persisted response instead of being
+// duplicated.
+func enrichAssistantOutputs(turn *model.Turn, calls []chatHistoryCall) {
+	type persistedAssistant struct {
+		CallIndex int
+		Output    model.AssistantOutput
+	}
+	persisted := make([]persistedAssistant, 0, len(calls))
+	for index, content := range calls {
+		if content.AssistantOutputMessages == nil || strings.TrimSpace(content.AssistantOutputPreview) == "" {
+			continue
+		}
+		call := turn.LLMCalls[index]
+		start, end := childWindow(call.EndUnixNano, call.EndUnixNano+1, turn.StartUnixNano, turn.EndUnixNano)
+		status := call.Status
+		if status == "" {
+			status = "ok"
+		}
+		persisted = append(persisted, persistedAssistant{CallIndex: index, Output: model.AssistantOutput{
+			StartUnixNano:  start,
+			EndUnixNano:    end,
+			OutputMessages: content.AssistantOutputMessages,
+			OutputPreview:  content.AssistantOutputPreview,
+			OutputKind:     "text",
+			Provider:       call.Provider,
+			RequestModel:   call.RequestModel,
+			ResponseModel:  call.ResponseModel,
+			Status:         status,
+			ErrorType:      call.ErrorType,
+			Reason:         call.Reason,
+			ExtraAttributes: map[string]any{
+				"content.source": "grok_chat_history",
+				"timing.source":  "grok_llm_boundary",
+			},
+		}})
+	}
+	if len(persisted) == 0 {
+		return
+	}
+
+	if len(turn.AssistantOutputs) > 0 {
+		lastOutput := len(persisted) - 1
+		terminal := len(turn.AssistantOutputs) - 1
+		candidate := persisted[lastOutput]
+		terminalOutput := turn.AssistantOutputs[terminal]
+		if candidate.CallIndex == len(calls)-1 || sameAssistantPreview(candidate.Output, terminalOutput) {
+			turn.AssistantOutputs[terminal] = mergeAssistantOutput(terminalOutput, candidate.Output)
+			persisted = persisted[:lastOutput]
+		}
+	}
+	outputs := make([]model.AssistantOutput, 0, len(persisted)+len(turn.AssistantOutputs))
+	for _, candidate := range persisted {
+		outputs = append(outputs, candidate.Output)
+	}
+	turn.AssistantOutputs = append(outputs, turn.AssistantOutputs...)
+}
+
+func sameAssistantPreview(left, right model.AssistantOutput) bool {
+	return strings.TrimSpace(left.OutputPreview) != "" && strings.TrimSpace(left.OutputPreview) == strings.TrimSpace(right.OutputPreview)
+}
+
+func mergeAssistantOutput(terminal, persisted model.AssistantOutput) model.AssistantOutput {
+	terminal.StartUnixNano = persisted.StartUnixNano
+	terminal.EndUnixNano = persisted.EndUnixNano
+	terminal.OutputMessages = persisted.OutputMessages
+	terminal.OutputPreview = persisted.OutputPreview
+	terminal.OutputKind = persisted.OutputKind
+	terminal.Provider = firstNonEmpty(persisted.Provider, terminal.Provider)
+	terminal.RequestModel = firstNonEmpty(persisted.RequestModel, terminal.RequestModel)
+	terminal.ResponseModel = firstNonEmpty(persisted.ResponseModel, terminal.ResponseModel)
+	if terminal.Status == "" {
+		terminal.Status = persisted.Status
+	}
+	if terminal.ExtraAttributes == nil {
+		terminal.ExtraAttributes = map[string]any{}
+	}
+	for key, value := range persisted.ExtraAttributes {
+		terminal.ExtraAttributes[key] = value
+	}
+	return terminal
 }
 
 func promptIndexBeforeTerminal(path string, terminal transcriptRecord) (int64, bool, error) {
@@ -182,7 +270,7 @@ func buildChatHistoryCalls(items []chatHistoryItem, maxChars int) []chatHistoryC
 				inputs = append(inputs, message)
 			}
 		case "assistant":
-			output, toolIDs := chatAssistantMessage(item, maxChars)
+			output, assistantOutput, assistantPreview, toolIDs := chatAssistantMessage(item, maxChars)
 			if output == nil {
 				continue
 			}
@@ -196,6 +284,7 @@ func buildChatHistoryCalls(items []chatHistoryItem, maxChars int) []chatHistoryC
 				ModelID: item.ModelID, InputMessages: inputMessages, OutputMessages: outputMessages,
 				InputPreview: messagePreview(inputMessages, maxChars), OutputPreview: messagePreview(outputMessages, maxChars),
 				OutputKind: kind, ToolCallIDs: toolIDs,
+				AssistantOutputMessages: assistantOutput, AssistantOutputPreview: assistantPreview,
 			})
 			inputs = nil
 		}
@@ -223,8 +312,9 @@ func chatToolResultMessage(item chatHistoryItem, maxChars int) any {
 	return map[string]any{"role": "tool", "parts": []any{part}}
 }
 
-func chatAssistantMessage(item chatHistoryItem, maxChars int) (any, []string) {
-	parts := chatTextParts(item.Content, maxChars)
+func chatAssistantMessage(item chatHistoryItem, maxChars int) (any, any, string, []string) {
+	textParts := chatTextParts(item.Content, maxChars)
+	parts := append([]any(nil), textParts...)
 	toolIDs := make([]string, 0, len(item.ToolCalls))
 	for _, toolCall := range item.ToolCalls {
 		if strings.TrimSpace(toolCall.Name) == "" {
@@ -241,15 +331,37 @@ func chatAssistantMessage(item chatHistoryItem, maxChars int) (any, []string) {
 		parts = append(parts, part)
 	}
 	if len(parts) == 0 {
-		return nil, nil
+		return nil, nil, "", nil
+	}
+	finishReason := "stop"
+	if len(toolIDs) > 0 {
+		finishReason = "tool_call"
 	}
 	message := map[string]any{"role": "assistant", "parts": parts}
-	if len(toolIDs) > 0 {
-		message["finish_reason"] = "tool_call"
-	} else {
-		message["finish_reason"] = "stop"
+	message["finish_reason"] = finishReason
+
+	var assistantOutput any
+	assistantPreview := ""
+	if len(textParts) > 0 {
+		assistantOutput = []any{map[string]any{
+			"role":          "assistant",
+			"parts":         textParts,
+			"finish_reason": finishReason,
+		}}
+		assistantPreview = chatTextPreview(textParts, maxChars)
 	}
-	return message, toolIDs
+	return message, assistantOutput, assistantPreview, toolIDs
+}
+
+func chatTextPreview(parts []any, maxChars int) string {
+	texts := make([]string, 0, len(parts))
+	for _, rawPart := range parts {
+		part, _ := rawPart.(map[string]any)
+		if text, ok := part["content"].(string); ok && strings.TrimSpace(text) != "" {
+			texts = append(texts, text)
+		}
+	}
+	return preview.Text(strings.Join(texts, "\n"), maxChars)
 }
 
 func chatTextParts(content any, maxChars int) []any {

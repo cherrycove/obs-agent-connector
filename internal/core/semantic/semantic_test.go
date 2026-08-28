@@ -1,6 +1,7 @@
 package semantic
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -28,6 +29,8 @@ func TestBuildProducesCanonicalTreeWithRootSummaryAndNoAssistantTokens(t *testin
 			StartUnixNano: start,
 			EndUnixNano:   start + int64(time.Second),
 			RequestModel:  "model-test",
+			InputPreview:  "model prompt",
+			OutputPreview: "model output",
 			Usage:         model.Usage{InputTokens: 13, OutputTokens: 5},
 		}},
 		ToolCalls: []model.ToolCall{{
@@ -54,6 +57,10 @@ func TestBuildProducesCanonicalTreeWithRootSummaryAndNoAssistantTokens(t *testin
 	if root.Attributes["gen_ai.usage.input_tokens"] != int64(13) || root.Attributes["gen_ai.usage.output_tokens"] != int64(5) {
 		t.Fatalf("invoke_agent aggregate usage was not preserved: %#v", root.Attributes)
 	}
+	assertGTraceUsage(t, root, map[string]int64{"input": 13, "output": 5, "total": 18})
+	if root.Attributes["gtrace.observation.type"] != "agent" || root.Attributes["gtrace.observation.input"] != "hello" || root.Attributes["gtrace.observation.output"] != "done" {
+		t.Fatalf("invoke_agent GTrace observation compatibility fields are missing: %#v", root.Attributes)
+	}
 	ids := map[string]string{}
 	for _, span := range spans {
 		ids[span.Name] = span.SpanID
@@ -70,6 +77,16 @@ func TestBuildProducesCanonicalTreeWithRootSummaryAndNoAssistantTokens(t *testin
 	if llm.Attributes["gen_ai.usage.input_tokens"] != int64(13) || llm.Attributes["gen_ai.usage.output_tokens"] != int64(5) {
 		t.Fatalf("llm usage was not preserved: %#v", llm.Attributes)
 	}
+	assertGTraceUsage(t, llm, map[string]int64{"input": 13, "output": 5, "total": 18})
+	if llm.Attributes["gtrace.observation.type"] != "llm" || llm.Attributes["gtrace.observation.input"] != "model prompt" || llm.Attributes["gtrace.observation.output"] != "model output" || llm.Attributes["gtrace.model.name"] != "model-test" {
+		t.Fatalf("llm GTrace observation compatibility fields are missing: %#v", llm.Attributes)
+	}
+	if _, ok := findSpan(t, spans, "assistant").Attributes["gtrace.usage"]; ok {
+		t.Fatal("assistant must not carry GTrace usage")
+	}
+	if findSpan(t, spans, "assistant").Attributes["gtrace.observation.type"] != "assistant" {
+		t.Fatal("assistant GTrace observation type is missing")
+	}
 	if findSpan(t, spans, "skill:demo").ParentID != ids["tool:exec"] {
 		t.Fatal("skill must be a tool child")
 	}
@@ -77,9 +94,21 @@ func TestBuildProducesCanonicalTreeWithRootSummaryAndNoAssistantTokens(t *testin
 	if skill.Attributes["input_preview"] != "skill/demo" || skill.Attributes["output_preview"] != "done" {
 		t.Fatalf("unexpected skill previews: %#v", skill.Attributes)
 	}
+	if skill.Attributes["gtrace.observation.type"] != "skill" || skill.Attributes["gtrace.observation.input"] != "skill/demo" || skill.Attributes["gtrace.observation.output"] != "done" {
+		t.Fatalf("skill GTrace observation compatibility fields are missing: %#v", skill.Attributes)
+	}
+	if _, ok := skill.Attributes["gtrace.usage"]; ok {
+		t.Fatal("skill must not carry GTrace usage")
+	}
 	tool := findSpan(t, spans, "tool:exec")
 	if tool.Attributes["triggered_by.llm_span_id"] != ids["llm"] {
 		t.Fatal("tool must reference the triggering llm")
+	}
+	if tool.Attributes["gtrace.observation.type"] != "tool" {
+		t.Fatalf("tool GTrace observation type is missing: %#v", tool.Attributes)
+	}
+	if _, ok := tool.Attributes["gtrace.usage"]; ok {
+		t.Fatal("tool must not carry GTrace usage")
 	}
 }
 
@@ -193,4 +222,24 @@ func findSpan(t *testing.T, spans []model.Span, name string) model.Span {
 	}
 	t.Fatalf("missing span %s", name)
 	return model.Span{}
+}
+
+func assertGTraceUsage(t *testing.T, span model.Span, want map[string]int64) {
+	t.Helper()
+	raw, ok := span.Attributes["gtrace.usage"].(string)
+	if !ok {
+		t.Fatalf("%s is missing string gtrace.usage: %#v", span.Name, span.Attributes)
+	}
+	var got map[string]int64
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("%s has invalid gtrace.usage: %v", span.Name, err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%s has unexpected gtrace.usage: got %#v want %#v", span.Name, got, want)
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Fatalf("%s has unexpected gtrace.usage[%s]: got %d want %d", span.Name, key, got[key], value)
+		}
+	}
 }

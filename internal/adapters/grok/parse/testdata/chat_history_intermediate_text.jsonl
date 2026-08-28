@@ -1,0 +1,7 @@
+{"type":"user","content":[{"type":"text","text":"Run a synthetic parallel lookup."}],"synthetic_reason":null,"prompt_index":7}
+{"type":"assistant","content":"I will check the synthetic sources.","tool_calls":[{"id":"synthetic-search-1","name":"web_search","arguments":"{\"query\":\"synthetic alpha\"}"},{"id":"synthetic-search-2","name":"web_search","arguments":"{\"query\":\"synthetic beta\"}"},{"id":"synthetic-search-3","name":"web_search","arguments":"{\"query\":\"synthetic gamma\"}"}],"model_id":"grok-4.6"}
+{"type":"tool_result","tool_call_id":"synthetic-search-1","content":"Synthetic alpha result."}
+{"type":"tool_result","tool_call_id":"synthetic-search-2","content":"Synthetic beta result."}
+{"type":"tool_result","tool_call_id":"synthetic-search-3","content":"Synthetic gamma result."}
+{"type":"assistant","content":"Synthetic answer.","tool_calls":[],"model_id":"grok-4.6"}
+{"type":"user","content":[{"type":"text","text":"A later prompt must not leak into the prior turn."}],"synthetic_reason":null,"prompt_index":8}

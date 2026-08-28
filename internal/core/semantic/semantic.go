@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -60,6 +61,9 @@ func (b Builder) Build(turn model.Turn) []model.Span {
 	mergeAttrs(rootAttrs, turn.ExtraAttributes)
 	removeUsageAttrs(rootAttrs)
 	addUsage(rootAttrs, turn.Usage)
+	delete(rootAttrs, "gtrace.usage")
+	addGTraceUsage(rootAttrs, turn.Usage)
+	addGTraceObservation(rootAttrs, "agent")
 	setAttr(rootAttrs, "gen_ai.usage.credit", positiveFloat(turn.CreditUsage))
 
 	spans := []model.Span{makeSpan(
@@ -88,6 +92,9 @@ func (b Builder) Build(turn model.Turn) []model.Span {
 		setAttr(attrs, "reason", call.Reason)
 		addUsage(attrs, call.Usage)
 		mergeAttrs(attrs, call.ExtraAttributes)
+		delete(attrs, "gtrace.usage")
+		addGTraceUsage(attrs, call.Usage)
+		addGTraceObservation(attrs, "llm")
 		spans = append(spans, makeSpan(
 			traceID, spanID, rootID, "llm", callStart, callEnd,
 			attrs, resource, scope, call.ErrorType,
@@ -119,6 +126,7 @@ func (b Builder) Build(turn model.Turn) []model.Span {
 			addSkillAttrs(attrs, *tool.Skill)
 		}
 		mergeAttrs(attrs, tool.ExtraAttributes)
+		addGTraceObservation(attrs, "tool")
 		spans = append(spans, makeSpan(
 			traceID, toolID, rootID, "tool:"+toolName, toolStart, toolEnd,
 			attrs, resource, scope, tool.ErrorType,
@@ -132,6 +140,7 @@ func (b Builder) Build(turn model.Turn) []model.Span {
 			setAttr(skillAttrs, "error.type", skill.ErrorType)
 			setAttr(skillAttrs, "reason", skill.Reason)
 			addSkillAttrs(skillAttrs, skill)
+			addGTraceObservation(skillAttrs, "skill")
 			spans = append(spans, makeSpan(
 				traceID, randomHex(8), toolID, "skill:"+skill.Name,
 				toolStart, toolEnd, skillAttrs, resource, scope, skill.ErrorType,
@@ -153,6 +162,7 @@ func (b Builder) Build(turn model.Turn) []model.Span {
 		setAttr(attrs, "error.type", output.ErrorType)
 		setAttr(attrs, "reason", output.Reason)
 		mergeAttrs(attrs, output.ExtraAttributes)
+		addGTraceObservation(attrs, "assistant")
 		spans = append(spans, makeSpan(
 			traceID, randomHex(8), rootID, "assistant", outputStart, outputEnd,
 			attrs, resource, scope, output.ErrorType,
@@ -256,6 +266,51 @@ func addUsage(attrs map[string]any, usage model.Usage) {
 	setAttr(attrs, "gen_ai.usage.reasoning.output_tokens", positiveInt64(usage.ReasoningTokens))
 }
 
+// addGTraceUsage preserves the current GTrace observation compatibility
+// payload while the canonical gen_ai.usage.* attributes remain the semantic
+// source of truth. Agent Monitoring uses this payload for the input/output and
+// cache summaries shown for an observation.
+func addGTraceUsage(attrs map[string]any, usage model.Usage) {
+	values := map[string]int64{}
+	if usage.InputTokens > 0 {
+		values["input"] = usage.InputTokens
+	}
+	if usage.OutputTokens > 0 {
+		values["output"] = usage.OutputTokens
+	}
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		values["total"] = usage.InputTokens + usage.OutputTokens
+	}
+	if usage.CacheReadTokens > 0 {
+		values["cache_read_input_tokens"] = usage.CacheReadTokens
+	}
+	if usage.CacheCreateTokens > 0 {
+		values["cache_creation_input_tokens"] = usage.CacheCreateTokens
+	}
+	if len(values) == 0 {
+		return
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return
+	}
+	attrs["gtrace.usage"] = string(encoded)
+}
+
+func addGTraceObservation(attrs map[string]any, observationType string) {
+	delete(attrs, "gtrace.observation.type")
+	delete(attrs, "gtrace.observation.input")
+	delete(attrs, "gtrace.observation.output")
+	delete(attrs, "gtrace.model.name")
+	setAttr(attrs, "gtrace.observation.type", observationType)
+	setAttr(attrs, "gtrace.observation.input", attrs["input_preview"])
+	setAttr(attrs, "gtrace.observation.output", attrs["output_preview"])
+	setAttr(attrs, "gtrace.model.name", firstNonEmpty(
+		stringValue(attrs["gen_ai.response.model"]),
+		stringValue(attrs["gen_ai.request.model"]),
+	))
+}
+
 func removeUsageAttrs(attrs map[string]any) {
 	for key := range attrs {
 		if strings.HasPrefix(key, "gen_ai.usage.") {
@@ -341,6 +396,11 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func positiveInt(value int) any {
