@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -214,7 +215,15 @@ func enqueueRecoveredTurns(ctx turnContext, cfg grokconfig.Config) error {
 	if err != nil {
 		return err
 	}
+	manager := state.Manager{Root: filepath.Join(cfg.StateDir, "uploads")}
 	for _, turnID := range turnIDs {
+		completed, completedErr := manager.Completed(ctx.SessionID, turnID)
+		if completedErr != nil {
+			return completedErr
+		}
+		if completed {
+			continue
+		}
 		if _, statErr := os.Stat(journalPath(cfg.StateDir, ctx.SessionID, turnID)); statErr != nil {
 			if errors.Is(statErr, os.ErrNotExist) {
 				continue
@@ -274,7 +283,7 @@ func enqueueTurn(ctx turnContext, cfg grokconfig.Config) (string, error) {
 
 func startPendingWorkers(executable string, cfg grokconfig.Config) error {
 	queueDir := filepath.Join(cfg.StateDir, "queue")
-	entries, err := os.ReadDir(queueDir)
+	paths, err := pendingQueuePaths(queueDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -288,15 +297,11 @@ func startPendingWorkers(executable string, cfg grokconfig.Config) error {
 	defer devNull.Close()
 	started := 0
 	checked := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "turn-") || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
+	for _, path := range paths {
 		checked++
 		if checked > maxQueueChecksPerHook || started >= maxWorkersPerHook {
 			break
 		}
-		path := filepath.Join(queueDir, entry.Name())
 		if activeLock(path+".lock", 2*time.Minute) {
 			continue
 		}
@@ -309,6 +314,40 @@ func startPendingWorkers(executable string, cfg grokconfig.Config) error {
 		started++
 	}
 	return nil
+}
+
+type pendingQueue struct {
+	path     string
+	modified time.Time
+}
+
+func pendingQueuePaths(queueDir string) ([]string, error) {
+	entries, err := os.ReadDir(queueDir)
+	if err != nil {
+		return nil, err
+	}
+	queues := make([]pendingQueue, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "turn-") || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil, infoErr
+		}
+		queues = append(queues, pendingQueue{
+			path:     filepath.Join(queueDir, entry.Name()),
+			modified: info.ModTime(),
+		})
+	}
+	sort.SliceStable(queues, func(i, j int) bool {
+		return queues[i].modified.After(queues[j].modified)
+	})
+	paths := make([]string, 0, len(queues))
+	for _, queue := range queues {
+		paths = append(paths, queue.path)
+	}
+	return paths, nil
 }
 
 func ProcessQueue(queuePath string, options RunOptions) error {
@@ -328,6 +367,14 @@ func ProcessQueue(queuePath string, options RunOptions) error {
 	queued, err := readQueue(queuePath)
 	if err != nil {
 		return err
+	}
+	manager := state.Manager{Root: filepath.Join(cfg.StateDir, "uploads"), StaleAfter: 10 * time.Minute}
+	completed, err := manager.Completed(queued.SessionID, queued.TurnID)
+	if err != nil {
+		return err
+	}
+	if completed {
+		return cleanupQueue(cfg, queuePath, queued.SessionID, queued.TurnID)
 	}
 	if queued.AgentVersion == "" {
 		queued.AgentVersion = resourceString(cfg.ResourceAttributes, "agent_version")
@@ -352,16 +399,23 @@ func ProcessQueue(queuePath string, options RunOptions) error {
 	if err := exportTurn(cfg, *queued.Turn, options.HTTPClient); err != nil {
 		return err
 	}
-	journal := journalPath(cfg.StateDir, queued.Turn.SessionID, queued.Turn.TurnID)
+	if err := cleanupQueue(cfg, queuePath, queued.Turn.SessionID, queued.Turn.TurnID); err != nil {
+		return err
+	}
+	appendLog(cfg, "turn uploaded", map[string]any{
+		"session_id_hash": shortHash(queued.Turn.SessionID), "turn_id_hash": shortHash(queued.Turn.TurnID),
+	})
+	return nil
+}
+
+func cleanupQueue(cfg grokconfig.Config, queuePath, sessionID, turnID string) error {
+	journal := journalPath(cfg.StateDir, sessionID, turnID)
 	if err := os.Remove(journal); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	if err := os.Remove(queuePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	appendLog(cfg, "turn uploaded", map[string]any{
-		"session_id_hash": shortHash(queued.Turn.SessionID), "turn_id_hash": shortHash(queued.Turn.TurnID),
-	})
 	return nil
 }
 

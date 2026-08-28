@@ -241,6 +241,60 @@ func TestProcessQueuePreservesQueueWhileUploadClaimIsActive(t *testing.T) {
 	}
 }
 
+func TestProcessQueueRemovesAlreadyCompletedQueueWithoutTranscript(t *testing.T) {
+	cfg := testConfig(t, "https://example.invalid")
+	queuePath := filepath.Join(cfg.StateDir, "queue", "turn-completed.json")
+	queued := queuedTurn{
+		SessionID: "session-completed", TurnID: "prompt-completed",
+		TranscriptPath: filepath.Join(t.TempDir(), "missing-updates.jsonl"),
+	}
+	if err := writeQueue(queuePath, queued); err != nil {
+		t.Fatal(err)
+	}
+	manager := state.Manager{Root: filepath.Join(cfg.StateDir, "uploads")}
+	claim, err := manager.Claim(queued.SessionID, queued.TurnID, "fingerprint")
+	if err != nil || claim == nil {
+		t.Fatalf("claim completed turn: claim=%#v err=%v", claim, err)
+	}
+	if err := claim.MarkSignalUploaded("traces", map[string]any{"status": 200}); err != nil {
+		t.Fatal(err)
+	}
+	if err := claim.Complete("traces"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ProcessQueue(queuePath, RunOptions{Config: &cfg, SkipWait: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(queuePath); !os.IsNotExist(err) {
+		t.Fatalf("completed queue was not removed: %v", err)
+	}
+}
+
+func TestPendingQueuePathsPrioritizeNewestTurns(t *testing.T) {
+	queueDir := t.TempDir()
+	oldPath := filepath.Join(queueDir, "turn-old.json")
+	newPath := filepath.Join(queueDir, "turn-new.json")
+	for _, path := range []string{oldPath, newPath} {
+		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := time.Date(2026, 8, 27, 8, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(oldPath, base, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newPath, base.Add(time.Minute), base.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := pendingQueuePaths(queueDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 || paths[0] != newPath || paths[1] != oldPath {
+		t.Fatalf("pending queue order = %#v", paths)
+	}
+}
+
 func TestGrokMetricsExcludeHighCardinalitySessionLabels(t *testing.T) {
 	spans := []model.Span{{
 		Name: "invoke_agent", DurationMs: 1000,
