@@ -469,6 +469,12 @@ func normalize(
 	}
 	if terminalRecord != nil {
 		turn.Usage = promptUsage(terminalRecord.Params.Update["usage"])
+		if turn.Usage.InputTokens > 0 {
+			turn.ExtraAttributes["usage_input_tokens"] = turn.Usage.InputTokens
+		}
+		if turn.Usage.OutputTokens > 0 {
+			turn.ExtraAttributes["usage_output_tokens"] = turn.Usage.OutputTokens
+		}
 	}
 	if options.CaptureContent != "none" {
 		turn.InputMessages = textMessage("user", prompt, options.MaxChars)
@@ -495,6 +501,9 @@ func normalize(
 			turn.LLMCalls = append(turn.LLMCalls, calls...)
 			toolTriggers = triggers
 		}
+	}
+	if terminalRecord != nil {
+		enrichSingleCallFromTurn(&turn, *terminalRecord)
 	}
 
 	for _, raw := range tools {
@@ -552,6 +561,39 @@ func normalize(
 		turn.AssistantOutputs = append(turn.AssistantOutputs, assistant)
 	}
 	return turn
+}
+
+func enrichSingleCallFromTurn(turn *model.Turn, record transcriptRecord) {
+	if turn == nil || len(turn.LLMCalls) != 1 || !completeSingleCallUsage(record) {
+		return
+	}
+	call := &turn.LLMCalls[0]
+	if turn.Usage != (model.Usage{}) {
+		call.Usage = turn.Usage
+	}
+	if call.InputMessages == nil {
+		call.InputMessages = turn.InputMessages
+	}
+	if call.OutputMessages == nil {
+		call.OutputMessages = turn.OutputMessages
+	}
+	if call.InputPreview == "" {
+		call.InputPreview = turn.InputPreview
+	}
+	if call.OutputPreview == "" {
+		call.OutputPreview = turn.OutputPreview
+	}
+	if call.OutputKind == "" && turn.OutputLength > 0 {
+		call.OutputKind = "text"
+	}
+}
+
+func completeSingleCallUsage(record transcriptRecord) bool {
+	usage, ok := record.Params.Update["usage"].(map[string]any)
+	if !ok || boolValue(firstNonNil(usage["usageIsIncomplete"], usage["usage_is_incomplete"])) {
+		return false
+	}
+	return int64Value(firstNonNil(usage["modelCalls"], usage["model_calls"])) == 1
 }
 
 func responseCall(value responseBoundary, turnID string, index int, parentStart, parentEnd int64) model.LLMCall {

@@ -246,6 +246,9 @@ func TestReadTurnBuildsSingleCallFromStableTurnUsage(t *testing.T) {
 	if call.ResponseModel != "grok-4.6" || call.Usage != turn.Usage {
 		t.Fatalf("single-call model or usage was not preserved: %#v", call)
 	}
+	if call.InputMessages == nil || call.OutputMessages == nil || call.InputPreview != "hello" || call.OutputPreview != "synthetic answer" || call.OutputKind != "text" {
+		t.Fatalf("single-call turn content was not attached to the LLM call: %#v", call)
+	}
 	if call.EndUnixNano-call.StartUnixNano != int64(5911*time.Millisecond) || call.ExtraAttributes["timing.source"] != "grok_turn_completed_usage" {
 		t.Fatalf("single-call timing was not derived from apiDurationMs: %#v", call)
 	}
@@ -259,6 +262,12 @@ func TestReadTurnBuildsSingleCallFromStableTurnUsage(t *testing.T) {
 			t.Fatalf("token usage missing from %s: %#v", span.Name, span.Attributes)
 		}
 	}
+	if spans[0].Attributes["usage_input_tokens"] != int64(17991) || spans[0].Attributes["usage_output_tokens"] != int64(221) {
+		t.Fatalf("root token compatibility aliases are missing: %#v", spans[0].Attributes)
+	}
+	if spans[1].Attributes["gen_ai.input.messages"] == nil || spans[1].Attributes["gen_ai.output.messages"] == nil || spans[1].Attributes["usage_input_tokens"] != nil {
+		t.Fatalf("single LLM content or root-only alias policy is incorrect: %#v", spans[1].Attributes)
+	}
 	tokenPoints := 0
 	for _, metric := range coremetrics.Build(spans) {
 		if metric.Name == "gen_ai.client.token.usage" {
@@ -267,6 +276,63 @@ func TestReadTurnBuildsSingleCallFromStableTurnUsage(t *testing.T) {
 	}
 	if tokenPoints != 2 {
 		t.Fatalf("expected one input and one output token metric, got %d", tokenPoints)
+	}
+}
+
+func TestReadTurnEnrichesSingleEventCallWithTurnContentAndUsage(t *testing.T) {
+	tempDir := t.TempDir()
+	transcriptPath := filepath.Join(tempDir, "updates.jsonl")
+	writeUpdates(t, transcriptPath, []map[string]any{xaiUpdate(610, "single-event-session", map[string]any{
+		"sessionUpdate": "turn_completed", "prompt_id": "single-event-prompt", "stop_reason": "end_turn", "agent_result": "answer",
+		"usage": map[string]any{
+			"inputTokens": 10, "outputTokens": 4, "cachedReadTokens": 3, "reasoningTokens": 2, "modelCalls": 1,
+			"modelUsage": map[string]any{"grok-4.6": map[string]any{"modelCalls": 1}},
+		},
+	})})
+	events := strings.Join([]string{
+		`{"ts":"1970-01-01T00:10:00.100Z","type":"turn_started","session_id":"single-event-session","model_id":"grok-4.6","schema_version":"1.0"}`,
+		`{"ts":"1970-01-01T00:10:00.200Z","type":"loop_started","loop_index":0}`,
+		`{"ts":"1970-01-01T00:10:00.300Z","type":"phase_changed","phase":"waiting_for_model"}`,
+		`{"ts":"1970-01-01T00:10:01.000Z","type":"first_token"}`,
+		`{"ts":"1970-01-01T00:10:10.000Z","type":"turn_ended","outcome":"completed"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(tempDir, "events.jsonl"), []byte(events), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	turn, ok, err := ReadTurn(Options{
+		TranscriptPath: transcriptPath,
+		SessionID:      "single-event-session",
+		TurnID:         "single-event-prompt",
+		CaptureContent: "preview",
+		MaxChars:       1_000,
+		Events: []JournalEvent{{
+			Event: "UserPromptSubmit", RecordedNano: mustRFC3339Nano(t, "1970-01-01T00:10:00.200Z"),
+			Payload: map[string]any{"prompt": "hello"},
+		}},
+	})
+	if err != nil || !ok {
+		t.Fatalf("ReadTurn() ok=%t err=%v", ok, err)
+	}
+	if len(turn.LLMCalls) != 1 {
+		t.Fatalf("single event turn did not produce one LLM call: %#v", turn.LLMCalls)
+	}
+	call := turn.LLMCalls[0]
+	if call.ExtraAttributes["timing.source"] != "grok_events" || call.Usage != turn.Usage || call.InputPreview != "hello" || call.OutputPreview != "answer" {
+		t.Fatalf("single event call was not enriched from unambiguous turn evidence: %#v", call)
+	}
+	spans := (semantic.Builder{}).Build(turn)
+	if spans[1].Attributes["gen_ai.input.messages"] == nil || spans[1].Attributes["gen_ai.output.messages"] == nil || spans[1].Attributes["gen_ai.usage.input_tokens"] != int64(10) || spans[1].Attributes["gen_ai.usage.output_tokens"] != int64(4) {
+		t.Fatalf("single event LLM span lacks content or usage: %#v", spans[1].Attributes)
+	}
+	tokenPoints := 0
+	for _, metric := range coremetrics.Build(spans) {
+		if metric.Name == "gen_ai.client.token.usage" {
+			tokenPoints++
+		}
+	}
+	if tokenPoints != 2 {
+		t.Fatalf("expected input/output token metrics for one proven call, got %d", tokenPoints)
 	}
 }
 
