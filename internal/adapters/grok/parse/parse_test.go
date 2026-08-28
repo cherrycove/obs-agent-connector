@@ -69,7 +69,7 @@ func TestReadTurnRequiresDurableTerminalAndBuildsPairedResponses(t *testing.T) {
 	start := time.Unix(99, 0).UnixNano()
 	end := time.Unix(104, 1).UnixNano()
 	turn, ok, err := ReadTurn(Options{
-		TranscriptPath: path, SessionID: "session-1", TurnID: "prompt-1", AgentVersion: "1.0.10",
+		TranscriptPath: path, SessionID: "session-1", TurnID: "prompt-1", AgentVersion: "1.0.5",
 		CaptureContent: "preview", MaxChars: 20_000, ResourceAttributes: map[string]any{"team": "platform"},
 		Events: []JournalEvent{
 			{Event: "UserPromptSubmit", RecordedNano: start, Payload: map[string]any{"prompt": "inspect the skill"}},
@@ -84,7 +84,7 @@ func TestReadTurnRequiresDurableTerminalAndBuildsPairedResponses(t *testing.T) {
 	if turn.SessionID != "session-1" || turn.TurnID != "prompt-1" || turn.FinalStatus != model.FinalStatusCompleted {
 		t.Fatalf("unexpected identity or status: %#v", turn)
 	}
-	if turn.AgentRuntime != "grok" || turn.AgentName != "Grok Build" || turn.AgentVersion != "1.0.10" {
+	if turn.AgentRuntime != "grok" || turn.AgentName != "Grok Build" || turn.AgentVersion != "1.0.5" {
 		t.Fatalf("unexpected Grok identity: %#v", turn)
 	}
 	if len(turn.LLMCalls) != 2 || turn.LLMCalls[0].CallID != "message-1" || turn.LLMCalls[1].CallID != "message-2" {

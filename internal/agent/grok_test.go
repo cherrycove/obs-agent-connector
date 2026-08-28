@@ -9,7 +9,8 @@ import (
 
 func TestParseGrokVersion(t *testing.T) {
 	cases := map[string]string{
-		"1.0.10":                    "1.0.10",
+		"1.0.5":                     "1.0.5",
+		"grok 1.0.5 (5115b46)":      "1.0.5",
 		"grok 1.0.10 (77cd7eb)":     "1.0.10",
 		"Grok Build v1.2.3-alpha.1": "1.2.3-alpha.1",
 		"grok nightly":              "",
@@ -25,12 +26,13 @@ func TestParseGrokVersion(t *testing.T) {
 
 func TestGrokVersionMinimum(t *testing.T) {
 	cases := map[string]bool{
-		"1.0.9":          false,
-		"1.0.10-alpha.1": false,
-		"1.0.10":         true,
-		"1.0.10+build.1": true,
-		"1.1.0-alpha.1":  true,
-		"2.0.0":          true,
+		"1.0.4":         false,
+		"1.0.5-alpha.1": false,
+		"1.0.5":         true,
+		"1.0.5+build.1": true,
+		"1.0.10":        true,
+		"1.1.0-alpha.1": true,
+		"2.0.0":         true,
 	}
 	for version, expected := range cases {
 		if got := grokVersionAtLeast(version, MinimumGrokVersion); got != expected {
@@ -47,12 +49,12 @@ func TestResolveGrokForInstallChecksKnownVersion(t *testing.T) {
 	t.Setenv("GROK_BINARY", "")
 	t.Setenv("GROK_CLI_PATH", "")
 	command := filepath.Join(binDir, "grok")
-	writeGrokCommand(t, command, "grok 1.0.9 (synthetic)")
+	writeGrokCommand(t, command, "grok 1.0.4 (synthetic)")
 
 	if _, err := resolveGrokForInstall(definitions["grok"]); err == nil || !strings.Contains(err.Error(), MinimumGrokVersion) {
 		t.Fatalf("expected minimum version error, got %v", err)
 	}
-	writeGrokCommand(t, command, "grok 1.0.10 (synthetic)")
+	writeGrokCommand(t, command, "grok 1.0.5 (synthetic)")
 	resolved, err := resolveGrokForInstall(definitions["grok"])
 	if err != nil {
 		t.Fatal(err)
@@ -78,10 +80,10 @@ func TestResolveGrokForInstallAllowsUnknownVersion(t *testing.T) {
 
 func TestDetectGrokVersionResolvesConfiguredDefaultCommand(t *testing.T) {
 	command := filepath.Join(t.TempDir(), "grok")
-	writeGrokCommand(t, command, "grok 1.0.10 (synthetic)")
+	writeGrokCommand(t, command, "grok 1.0.5 (synthetic)")
 	t.Setenv("GROK_BINARY", command)
 	t.Setenv("GROK_CLI_PATH", "")
-	if version, ok := DetectGrokVersion("grok"); !ok || version != "1.0.10" {
+	if version, ok := DetectGrokVersion("grok"); !ok || version != "1.0.5" {
 		t.Fatalf("DetectGrokVersion(grok) = %q, %t", version, ok)
 	}
 }
@@ -111,7 +113,7 @@ func TestDiscoverGrokByCommandOrDataDirectory(t *testing.T) {
 	t.Setenv("GROK_BINARY", "")
 	t.Setenv("GROK_CLI_PATH", "")
 	command := filepath.Join(binDir, "grok")
-	writeGrokCommand(t, command, "grok 1.0.10")
+	writeGrokCommand(t, command, "grok 1.0.5")
 	resolved, ok := resolveGrokForDiscovery(definitions["grok"])
 	if !ok || resolved.AgentCommand != command {
 		t.Fatalf("unexpected Grok command discovery: ok=%t definition=%#v", ok, resolved)

@@ -14,7 +14,7 @@ This document is a compact reference for:
 | `codex` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | Stop Hook adapter plus built-in Codex trust/config handling |
 | `cursor` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | Detects `~/.cursor`, prefers `cursor-agent`, and manages user-level Cursor Hooks |
 | `dcode` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | Hooks v2 plus transcript replay; normal `Stop` plus failed `SessionEnd` fallback |
-| `grok` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | Grok Build CLI 1.0.10+ TUI/headless; Hook journal plus terminal `updates.jsonl` replay |
+| `grok` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | Grok Build CLI 1.0.5+ TUI/headless; Hook journal plus terminal `updates.jsonl` replay |
 | `kiro` | Built into `obs-agent-connector` | `✅` | `✅` | `✅` | V3 interactive TTY only (`kiro-cli chat --v3`); default V2 and non-interactive modes are unsupported |
 | `dsh` | `dsh-otel-plugin` | `✅` | `✅` | `✅` | DeepSeek Harness profile bundle |
 | `hermes` | `hermes-otel-plugin` | `✅` | `✅` | `❌` | Hermes plugin |

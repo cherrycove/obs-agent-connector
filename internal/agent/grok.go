@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const MinimumGrokVersion = "1.0.10"
+const MinimumGrokVersion = "1.0.5"
 
 var grokVersionPattern = regexp.MustCompile(`(?i)(?:^|[^0-9A-Za-z])v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?:$|[^0-9A-Za-z.+-])`)
 

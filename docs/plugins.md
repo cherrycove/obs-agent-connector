@@ -11,7 +11,7 @@
 | `codex` | Codex | Current connector | `~/.obs-agent-connector/codex/gtrace.json` | Managed Hook and trust state in `~/.codex/hooks.json` / `~/.codex/config.toml` |
 | `cursor` | Cursor with automatic `~/.cursor` or Cursor CLI-family detection, preferring `cursor-agent` | Current connector | `~/.obs-agent-connector/cursor/gtrace.json` | Managed Hooks in `~/.cursor/hooks.json` |
 | `dcode` | Deep Agents Code with Hooks v2 (`dcode` 0.1.46 or later); normal `Stop` plus failed `SessionEnd` terminal telemetry | Current connector | `~/.obs-agent-connector/dcode/gtrace.json` | Managed Hooks in `~/.deepagents/hooks.json` |
-| `grok` | Grok Build CLI 1.0.10+ TUI/headless | Current connector | `~/.obs-agent-connector/grok/gtrace.json` | Managed global Hook in `~/.grok/hooks/obs-agent-connector.json` |
+| `grok` | Grok Build CLI 1.0.5+ TUI/headless | Current connector | `~/.obs-agent-connector/grok/gtrace.json` | Managed global Hook in `~/.grok/hooks/obs-agent-connector.json` |
 | `kiro` | Kiro CLI V3 interactive TTY (`kiro-cli chat --v3`); default V2 and non-interactive modes are unsupported | Current connector | `~/.obs-agent-connector/kiro/gtrace.json` | Managed V3 global Hooks in `~/.kiro/hooks/obs-agent-connector.json` |
 | `dsh` | DeepSeek Harness | Unix: `https://static.guance.com/agent_plugins/dsh-otel-plugin/install.sh` Windows: `https://static.guance.com/agent_plugins/dsh-otel-plugin/install-release.ps1` | `$DSH_HOME/gtrace.json` (default `~/.dsh/gtrace.json`) | `$DSH_HOME/profiles/<profile>/node_modules/dsh-otel-plugin` |
 | `hermes` | Hermes | `https://static.guance.com/agent_plugins/hermes-otel-plugin/install.sh` | `~/.hermes/config.yaml` | `~/.hermes/plugins/hermes-otel-plugin` |

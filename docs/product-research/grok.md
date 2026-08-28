@@ -3,8 +3,9 @@
 ## 1. Product Scope
 
 - Product: Grok Build CLI, exposed by the `grok` command.
-- Source baseline: [`xai-org/grok-build` commit `77cd7eb675ba911c225c3aaeeece3a20cbccc426`](https://github.com/xai-org/grok-build/commit/77cd7eb675ba911c225c3aaeeece3a20cbccc426), whose shell and pager crates report version 1.0.10.
-- Minimum supported product version: Grok Build CLI 1.0.10.
+- Stable compatibility baseline: [`xai-org/grok-build` commit `9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4`](https://github.com/xai-org/grok-build/commit/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4), whose shell and pager crates report version 1.0.5 and whose Hook schema contains every event used by this adapter.
+- Release-channel evidence: the [official installer](https://x.ai/cli/install.sh) defaults to the `stable` channel and resolves its version from `https://x.ai/cli/stable`; that pointer returned 1.0.5 on the evidence date. The default source branch reported 1.0.10 at the same time, so source-package versions are not used as the stable release floor.
+- Minimum supported product version: Grok Build CLI 1.0.5.
 - Supported connector platforms: macOS, Linux, and Windows.
 - Supported product modes: TUI and headless sessions using Grok's common Hook and session-update surfaces.
 - Target implementation: the built-in `grok` adapter in `obs-agent-connector`.
@@ -16,10 +17,10 @@ The product facts below were validated from the pinned upstream source and its d
 
 | Item | Conclusion | Evidence |
 | --- | --- | --- |
-| Extension mechanism | Command Hooks in global or project `.grok/hooks/*.json` files | [Pinned Custom Hooks guide](https://github.com/xai-org/grok-build/blob/77cd7eb675ba911c225c3aaeeece3a20cbccc426/crates/codegen/xai-grok-pager/docs/custom-hooks.md) |
+| Extension mechanism | Command Hooks in global or project `.grok/hooks/*.json` files | [Pinned Custom Hooks guide](https://github.com/xai-org/grok-build/blob/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4/crates/codegen/xai-grok-pager/docs/custom-hooks.md) |
 | Managed Hook location | `~/.grok/hooks/obs-agent-connector.json` | Global Hooks are always trusted; the connector owns one dedicated file |
-| Used events | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `Stop`, `StopFailure`, `StopCancelled`, `Notification(idle_prompt)`, `SubagentStart`, `SubagentStop`, and `SessionEnd` | [Pinned Hooks reference](https://github.com/xai-org/grok-build/blob/77cd7eb675ba911c225c3aaeeece3a20cbccc426/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md) |
-| Hook input | camelCase JSON on stdin with common session, workspace, timestamp, transcript, permission, and optional prompt fields plus event-specific fields | [Pinned Hook envelope](https://github.com/xai-org/grok-build/blob/77cd7eb675ba911c225c3aaeeece3a20cbccc426/crates/codegen/xai-grok-hooks/src/event.rs) |
+| Used events | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `Stop`, `StopFailure`, `StopCancelled`, `Notification(idle_prompt)`, `SubagentStart`, `SubagentStop`, and `SessionEnd` | [Pinned Hooks reference](https://github.com/xai-org/grok-build/blob/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md) |
+| Hook input | camelCase JSON on stdin with common session, workspace, timestamp, transcript, permission, and optional prompt fields plus event-specific fields | [Pinned Hook envelope](https://github.com/xai-org/grok-build/blob/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4/crates/codegen/xai-grok-hooks/src/event.rs) |
 | Reload behavior | Restart Grok, or run `/hooks`, select the Hooks tab, and press `l` | Pinned Custom Hooks guide |
 | Host safety | Nonzero errors and timeouts fail open, except explicit gate decisions | Pinned Hooks reference |
 
@@ -97,7 +98,7 @@ worker           -> exact transcript + matching TurnCompleted
 | Windows | User home `.grok` | Same logical path | Same logical path | Same; live E2E pending |
 
 - Discovery: the `grok` executable in `PATH` or an existing `~/.grok` home.
-- Version policy: reject a known version below 1.0.10; allow an unknown/unparseable version with a warning.
+- Version policy: reject a known version below 1.0.5; allow an unknown/unparseable version with a warning.
 - Runtime config: `~/.obs-agent-connector/grok/gtrace.json`.
 - Hook log: `~/.obs-agent-connector/grok/gtrace-hooks.json`.
 - Journal, queue, and upload state: `~/.obs-agent-connector/grok/state/`.
@@ -142,7 +143,7 @@ All committed connector fixtures must be synthetic and contain no real prompt, u
 
 ## 12. Native External OpenTelemetry Coexistence
 
-Grok 1.0.10 also has an alpha, double-opt-in External OpenTelemetry stream controlled by `GROK_EXTERNAL_OTEL` plus explicit log/metric exporters. The pinned [Monitoring Usage guide](https://github.com/xai-org/grok-build/blob/77cd7eb675ba911c225c3aaeeece3a20cbccc426/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md) states that it exports logs and metrics only, with no customer-facing trace exporter.
+Grok 1.0.5 also has an alpha, double-opt-in External OpenTelemetry stream controlled by `GROK_EXTERNAL_OTEL` plus explicit log/metric exporters. The pinned [Monitoring Usage guide](https://github.com/xai-org/grok-build/blob/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4/crates/codegen/xai-grok-pager/docs/user-guide/24-monitoring-usage.md) states that it exports logs and metrics only, with no customer-facing trace exporter.
 
 The connector does not enable, disable, or rewrite that native configuration. Both streams can coexist, but enabling both can increase or overlap telemetry volume. Use the connector when GTrace turn traces, its span hierarchy, and its derived metrics are required.
 

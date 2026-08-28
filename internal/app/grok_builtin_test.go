@@ -73,7 +73,7 @@ func TestGrokBuiltinInstallRejectsKnownUnsupportedVersion(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	command := filepath.Join(t.TempDir(), "grok")
-	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf '1.0.9\\n'\n"), 0o755); err != nil {
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf '1.0.4\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	executable := filepath.Join(home, ".local", "bin", "obs-agent-connector")
@@ -96,7 +96,7 @@ func TestGrokBuiltinInstallPersistsDetectedAgentVersion(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	command := filepath.Join(t.TempDir(), "grok")
-	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'grok 1.0.10 (synthetic)\\n'\n"), 0o755); err != nil {
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'grok 1.0.5 (synthetic)\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	executable := filepath.Join(home, ".local", "bin", "obs-agent-connector")
@@ -113,7 +113,7 @@ func TestGrokBuiltinInstallPersistsDetectedAgentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), `"agent_version": "1.0.10"`) {
+	if !strings.Contains(string(body), `"agent_version": "1.0.5"`) {
 		t.Fatalf("detected Grok version was not persisted as a resource attribute: %s", body)
 	}
 }
