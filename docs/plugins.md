@@ -26,7 +26,7 @@ The Grok adapter uses a hybrid journal and transcript-replay design. Hook handle
 
 - `Stop` is a blocking gate and may fire repeatedly. The connector requires a matching durable `TurnCompleted` record, so a blocked or repeated `Stop` does not upload a partial turn.
 - `StopFailure` and `StopCancelled` preserve explicit failure or cancellation evidence. A later `UserPromptSubmit`, `idle_prompt` notification, or `SessionEnd` also recovers terminal turns that did not receive a final observable Stop event.
-- Per-call model and token fields are emitted only when `ResponseStarted` and `ResponseCompleted` provide stable call evidence. Turn totals are not copied across multiple LLM spans.
+- Exact per-call model and token fields are emitted when `ResponseStarted` and `ResponseCompleted` provide stable call evidence. When Grok exposes only a complete multi-call turn aggregate, the connector conservatively apportions it across the validated LLM calls, preserves the exact total, and marks each allocation with `gtrace.usage.estimated=true`.
 - Skill and subagent spans require stable IDs or a high-confidence `SKILL.md` path. The connector does not infer relationships from timing alone.
 - Grok's native External OpenTelemetry stream may run at the same time. It exports logs and metrics, while the connector provides GTrace traces and derived metrics; enabling both can produce overlapping telemetry volume.
 

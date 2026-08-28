@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"sort"
@@ -160,6 +161,9 @@ func ReadTurn(options Options) (model.Turn, bool, error) {
 	turn := normalize(options, prompt, output, stopReason, hookTerminal, terminalRecord, responses, eventTurns, tools)
 	if options.CaptureContent != "none" && terminalRecord != nil && strings.TrimSpace(options.TranscriptPath) != "" {
 		enrichCallsFromChatHistory(&turn, options.TranscriptPath, *terminalRecord, options.MaxChars)
+	}
+	if terminalRecord != nil {
+		allocateAggregateUsageAcrossCalls(&turn, *terminalRecord)
 	}
 	if turn.FinalStatus == model.FinalStatusUnset {
 		return model.Turn{}, false, nil
@@ -711,6 +715,137 @@ func completeSingleCallUsage(record transcriptRecord) bool {
 		return false
 	}
 	return int64Value(firstNonNil(usage["modelCalls"], usage["model_calls"])) == 1
+}
+
+// allocateAggregateUsageAcrossCalls provides a display-compatible estimate
+// when Grok persists exact turn totals and a validated call set, but omits
+// per-response usage. It never duplicates the aggregate: the apportioned
+// values sum exactly to the turn usage, and exact response usage always wins.
+func allocateAggregateUsageAcrossCalls(turn *model.Turn, record transcriptRecord) {
+	if turn == nil || len(turn.LLMCalls) <= 1 || turn.Usage == (model.Usage{}) {
+		return
+	}
+	usage, ok := record.Params.Update["usage"].(map[string]any)
+	if !ok || boolValue(firstNonNil(usage["usageIsIncomplete"], usage["usage_is_incomplete"])) {
+		return
+	}
+	if int64Value(firstNonNil(usage["modelCalls"], usage["model_calls"])) != int64(len(turn.LLMCalls)) {
+		return
+	}
+	for _, call := range turn.LLMCalls {
+		if call.Usage != (model.Usage{}) {
+			return
+		}
+	}
+
+	inputWeights := usageWeights(turn.LLMCalls, true)
+	outputWeights := usageWeights(turn.LLMCalls, false)
+	inputTokens := proportionalShares(turn.Usage.InputTokens, inputWeights)
+	outputTokens := proportionalShares(turn.Usage.OutputTokens, outputWeights)
+	cacheReadTokens := proportionalShares(turn.Usage.CacheReadTokens, inputWeights)
+	cacheCreateTokens := proportionalShares(turn.Usage.CacheCreateTokens, inputWeights)
+	reasoningTokens := proportionalShares(turn.Usage.ReasoningTokens, outputWeights)
+	for index := range turn.LLMCalls {
+		call := &turn.LLMCalls[index]
+		call.Usage = model.Usage{
+			InputTokens:       inputTokens[index],
+			OutputTokens:      outputTokens[index],
+			CacheReadTokens:   cacheReadTokens[index],
+			CacheCreateTokens: cacheCreateTokens[index],
+			ReasoningTokens:   reasoningTokens[index],
+		}
+		if call.ExtraAttributes == nil {
+			call.ExtraAttributes = map[string]any{}
+		}
+		call.ExtraAttributes["gtrace.usage.estimated"] = true
+		call.ExtraAttributes["gtrace.usage.source"] = "grok_turn_completed_proportional"
+	}
+}
+
+func usageWeights(calls []model.LLMCall, input bool) []int64 {
+	const maxWeight = int64(1_000_000_000)
+	weights := make([]int64, len(calls))
+	for index, call := range calls {
+		messages := call.OutputMessages
+		preview := call.OutputPreview
+		if input {
+			messages = call.InputMessages
+			preview = call.InputPreview
+		}
+		weight := encodedLength(messages)
+		if weight <= 0 {
+			weight = int64(len([]rune(preview)))
+		}
+		if weight <= 0 {
+			weight = (call.EndUnixNano - call.StartUnixNano) / int64(time.Millisecond)
+		}
+		if weight <= 0 {
+			weight = 1
+		}
+		if weight > maxWeight {
+			weight = maxWeight
+		}
+		weights[index] = weight
+	}
+	return weights
+}
+
+func encodedLength(value any) int64 {
+	if value == nil {
+		return 0
+	}
+	if text, ok := value.(string); ok {
+		return int64(len([]rune(text)))
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return 0
+	}
+	return int64(len(encoded))
+}
+
+func proportionalShares(total int64, weights []int64) []int64 {
+	shares := make([]int64, len(weights))
+	if total <= 0 || len(weights) == 0 {
+		return shares
+	}
+	weightTotal := int64(0)
+	for _, weight := range weights {
+		if weight > 0 {
+			weightTotal += weight
+		}
+	}
+	if weightTotal <= 0 {
+		return shares
+	}
+
+	type remainderShare struct {
+		index     int
+		remainder int64
+	}
+	remainders := make([]remainderShare, 0, len(weights))
+	allocated := int64(0)
+	quotient := total / weightTotal
+	remainderTotal := total % weightTotal
+	for index, weight := range weights {
+		if weight <= 0 {
+			continue
+		}
+		share := quotient * weight
+		remainderHigh, remainderLow := bits.Mul64(uint64(remainderTotal), uint64(weight))
+		remainderQuotient, remainderValue := bits.Div64(remainderHigh, remainderLow, uint64(weightTotal))
+		share += int64(remainderQuotient)
+		shares[index] = share
+		allocated += share
+		remainders = append(remainders, remainderShare{index: index, remainder: int64(remainderValue)})
+	}
+	sort.SliceStable(remainders, func(left, right int) bool {
+		return remainders[left].remainder > remainders[right].remainder
+	})
+	for index := int64(0); index < total-allocated; index++ {
+		shares[remainders[index%int64(len(remainders))].index]++
+	}
+	return shares
 }
 
 func responseCall(value responseBoundary, turnID string, index int, parentStart, parentEnd int64) model.LLMCall {

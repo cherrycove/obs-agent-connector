@@ -373,6 +373,11 @@ func TestReadTurnRequiresDurableTerminalAndBuildsPairedResponses(t *testing.T) {
 	if len(turn.LLMCalls) != 2 || turn.LLMCalls[0].CallID != "message-1" || turn.LLMCalls[1].CallID != "message-2" {
 		t.Fatalf("response boundaries were not preserved: %#v", turn.LLMCalls)
 	}
+	for _, call := range turn.LLMCalls {
+		if call.ExtraAttributes["gtrace.usage.estimated"] != nil || call.ExtraAttributes["gtrace.usage.source"] != nil {
+			t.Fatalf("exact response usage was replaced by an estimate: %#v", call)
+		}
+	}
 	if got := turn.LLMCalls[0].Usage; got.InputTokens != 15 || got.OutputTokens != 4 || got.CacheReadTokens != 3 || got.CacheCreateTokens != 2 || got.ReasoningTokens != 1 {
 		t.Fatalf("per-call response usage was not mapped correctly: %#v", got)
 	}
@@ -678,19 +683,31 @@ func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
 	if turn.StartUnixNano != eventTurnStart || turn.EndUnixNano != secondEnd || turn.ExtraAttributes["timing.source"] != "grok_events_and_hooks" {
 		t.Fatalf("root did not expand across bounded Hook delivery skew: %#v", turn)
 	}
+	allocated := model.Usage{}
 	for _, call := range turn.LLMCalls {
-		if call.RequestModel != "grok-4.6" || call.Usage != (model.Usage{}) || call.ExtraAttributes["timing.source"] != "grok_events" {
+		if call.RequestModel != "grok-4.6" || call.Usage == (model.Usage{}) || call.ExtraAttributes["timing.source"] != "grok_events" {
 			t.Fatalf("unexpected event-derived LLM call: %#v", call)
 		}
 		if call.ExtraAttributes["gtrace.synthetic"] != nil || call.ExtraAttributes["gtrace.timing.estimated"] != nil {
 			t.Fatalf("real event boundary was marked synthetic: %#v", call.ExtraAttributes)
 		}
+		if call.ExtraAttributes["gtrace.usage.estimated"] != true || call.ExtraAttributes["gtrace.usage.source"] != "grok_turn_completed_proportional" {
+			t.Fatalf("estimated usage provenance is missing: %#v", call.ExtraAttributes)
+		}
+		allocated.InputTokens += call.Usage.InputTokens
+		allocated.OutputTokens += call.Usage.OutputTokens
+		allocated.CacheReadTokens += call.Usage.CacheReadTokens
+		allocated.CacheCreateTokens += call.Usage.CacheCreateTokens
+		allocated.ReasoningTokens += call.Usage.ReasoningTokens
 	}
 	if turn.LLMCalls[0].TTFTMs != 0 || turn.LLMCalls[1].TTFTMs != 10909 {
 		t.Fatalf("first-token timing was not attached to its call: %#v", turn.LLMCalls)
 	}
 	if turn.Usage.InputTokens != 38315 || turn.Usage.OutputTokens != 155 || turn.Usage.ReasoningTokens != 61 {
 		t.Fatalf("aggregate usage was not retained on the root: %#v", turn.Usage)
+	}
+	if allocated != turn.Usage {
+		t.Fatalf("estimated per-call usage does not conserve the root aggregate: got %#v want %#v", allocated, turn.Usage)
 	}
 	if turn.LLMCalls[0].InputMessages == nil || turn.LLMCalls[0].OutputMessages == nil || turn.LLMCalls[0].OutputKind != "tool_call" {
 		t.Fatalf("first LLM call was not enriched from chat history: %#v", turn.LLMCalls[0])
@@ -745,8 +762,11 @@ func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
 		if llm.Attributes["gtrace.observation.type"] != "llm" || llm.Attributes["gtrace.observation.input"] == nil || llm.Attributes["gtrace.observation.output"] == nil {
 			t.Fatalf("LLM GTrace input/output compatibility fields are missing: %#v", llm.Attributes)
 		}
-		if llm.Attributes["gtrace.usage"] != nil {
-			t.Fatalf("turn aggregate usage was copied to an individual LLM: %#v", llm.Attributes)
+		if llm.Attributes["gtrace.usage"] == nil || llm.Attributes["gen_ai.usage.input_tokens"] == nil || llm.Attributes["gen_ai.usage.output_tokens"] == nil {
+			t.Fatalf("estimated LLM usage fields are missing: %#v", llm.Attributes)
+		}
+		if llm.Attributes["gtrace.usage.estimated"] != true || llm.Attributes["gtrace.usage.source"] != "grok_turn_completed_proportional" {
+			t.Fatalf("estimated LLM usage provenance is missing: %#v", llm.Attributes)
 		}
 	}
 	if spans[6].Attributes["gtrace.observation.type"] != "assistant" || spans[6].Attributes["gtrace.observation.output"] != "Synthetic answer." {
@@ -762,10 +782,17 @@ func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
 			t.Fatalf("tool span lacked the event-derived LLM association: %#v", span)
 		}
 	}
+	tokenPoints := 0
+	tokenTotals := map[string]int64{}
 	for _, metric := range coremetrics.Build(spans) {
-		if metric.Name == "gen_ai.client.token.usage" {
-			t.Fatalf("root aggregate tokens leaked into an event-derived per-call metric: %#v", metric)
+		if metric.Name != "gen_ai.client.token.usage" {
+			continue
 		}
+		tokenPoints++
+		tokenTotals[metric.Attributes["gen_ai.token.type"].(string)] += int64(metric.Value)
+	}
+	if tokenPoints != 4 || tokenTotals["input"] != turn.Usage.InputTokens || tokenTotals["output"] != turn.Usage.OutputTokens {
+		t.Fatalf("estimated token metrics do not conserve the root aggregate: points=%d totals=%#v usage=%#v", tokenPoints, tokenTotals, turn.Usage)
 	}
 }
 
@@ -900,17 +927,29 @@ func TestReadTurnSynthesizesCallsFromCompleteHookClusters(t *testing.T) {
 		t.Fatalf("hook cluster fallback did not produce two calls: %#v", turn.LLMCalls)
 	}
 	totalDuration := int64(0)
+	allocated := model.Usage{}
 	for _, call := range turn.LLMCalls {
 		totalDuration += call.EndUnixNano - call.StartUnixNano
-		if call.ResponseModel != "grok-4.6" || call.Usage != (model.Usage{}) {
+		if call.ResponseModel != "grok-4.6" || call.Usage == (model.Usage{}) {
 			t.Fatalf("aggregate model or tokens were mapped incorrectly: %#v", call)
 		}
 		if call.ExtraAttributes["timing.source"] != "grok_hook_boundaries" || call.ExtraAttributes["gtrace.synthetic"] != true || call.ExtraAttributes["gtrace.timing.estimated"] != true {
 			t.Fatalf("synthetic timing markers are incomplete: %#v", call.ExtraAttributes)
 		}
+		if call.ExtraAttributes["gtrace.usage.estimated"] != true || call.ExtraAttributes["gtrace.usage.source"] != "grok_turn_completed_proportional" {
+			t.Fatalf("synthetic call usage provenance is incomplete: %#v", call.ExtraAttributes)
+		}
+		allocated.InputTokens += call.Usage.InputTokens
+		allocated.OutputTokens += call.Usage.OutputTokens
+		allocated.CacheReadTokens += call.Usage.CacheReadTokens
+		allocated.CacheCreateTokens += call.Usage.CacheCreateTokens
+		allocated.ReasoningTokens += call.Usage.ReasoningTokens
 	}
 	if totalDuration != int64(29385*time.Millisecond) {
 		t.Fatalf("estimated calls total %s, want 29.385s", time.Duration(totalDuration))
+	}
+	if allocated != turn.Usage {
+		t.Fatalf("synthetic per-call usage does not conserve the root aggregate: got %#v want %#v", allocated, turn.Usage)
 	}
 	for _, tool := range turn.ToolCalls {
 		if tool.TriggeringLLMCall != turn.LLMCalls[0].CallID {
@@ -932,10 +971,14 @@ func TestReadTurnSynthesizesCallsFromCompleteHookClusters(t *testing.T) {
 			t.Fatalf("tool span lacked the synthetic LLM association: %#v", span)
 		}
 	}
+	tokenPoints := 0
 	for _, metric := range coremetrics.Build(spans) {
 		if metric.Name == "gen_ai.client.token.usage" {
-			t.Fatalf("aggregate turn tokens were split into synthetic call metrics: %#v", metric)
+			tokenPoints++
 		}
+	}
+	if tokenPoints != 4 {
+		t.Fatalf("expected input/output token metrics for two estimated calls, got %d", tokenPoints)
 	}
 }
 
