@@ -134,21 +134,46 @@ func TestInstallGrokRejectsMalformedHooksWithoutOverwriting(t *testing.T) {
 	}
 }
 
-func TestWriteGrokHooksQuotesWindowsExecutablePath(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "obs-agent-connector.json")
+func TestGrokHookCommandUsesSelectedPlatformShell(t *testing.T) {
 	executable := `C:\Program Files\Guance\obs-agent-connector.exe`
-	if err := writeGrokHooks(path, map[string]any{}, executable); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name          string
+		goos          string
+		requested     string
+		bashAvailable bool
+		want          string
+	}{
+		{name: "unix", goos: "linux", want: `"C:\Program Files\Guance\obs-agent-connector.exe" hook grok Stop`},
+		{name: "windows default", goos: "windows", want: `& 'C:\Program Files\Guance\obs-agent-connector.exe' hook grok Stop`},
+		{name: "PowerShell 7", goos: "windows", requested: "pwsh", want: `& 'C:\Program Files\Guance\obs-agent-connector.exe' hook grok Stop`},
+		{name: "Windows PowerShell", goos: "windows", requested: "powershell", want: `& 'C:\Program Files\Guance\obs-agent-connector.exe' hook grok Stop`},
+		{name: "cmd override", goos: "windows", requested: "cmd", want: `cd /d C:\Program Files\Guance && obs-agent-connector.exe hook grok Stop`},
+		{name: "Git Bash override", goos: "windows", requested: "bash", bashAvailable: true, want: `'C:/Program Files/Guance/obs-agent-connector.exe' hook grok Stop`},
+		{name: "missing Git Bash falls back", goos: "windows", requested: "bash", want: `& 'C:\Program Files\Guance\obs-agent-connector.exe' hook grok Stop`},
+		{name: "unknown override follows default", goos: "windows", requested: "fish", want: `& 'C:\Program Files\Guance\obs-agent-connector.exe' hook grok Stop`},
 	}
-	value, err := readJSONObject(path)
-	if err != nil {
-		t.Fatal(err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := grokHookCommandForPlatform(executable, "Stop", test.goos, test.requested, test.bashAvailable)
+			if got != test.want {
+				t.Fatalf("Grok Hook command = %q, want %q", got, test.want)
+			}
+		})
 	}
-	groups := value["hooks"].(map[string]any)["Stop"].([]any)
-	handler := groups[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
-	want := `"C:\Program Files\Guance\obs-agent-connector.exe" hook grok Stop`
-	if handler["command"] != want {
-		t.Fatalf("Windows Grok Hook command = %q, want %q", handler["command"], want)
+}
+
+func TestGrokHookCommandEscapesShellSpecificPaths(t *testing.T) {
+	powerShell := grokHookCommandForPlatform(`C:\Users\O'Brien\connector.exe`, "Stop", "windows", "pwsh", false)
+	if powerShell != `& 'C:\Users\O''Brien\connector.exe' hook grok Stop` {
+		t.Fatalf("PowerShell Hook command = %q", powerShell)
+	}
+	gitBash := grokHookCommandForPlatform(`C:\Users\O'Brien\connector.exe`, "Stop", "windows", "bash", true)
+	if gitBash != `'C:/Users/O'"'"'Brien/connector.exe' hook grok Stop` {
+		t.Fatalf("Git Bash Hook command = %q", gitBash)
+	}
+	cmd := grokHookCommandForPlatform(`C:\Users\O'Brien & Sons\connector.exe`, "Stop", "windows", "cmd", false)
+	if cmd != `cd /d C:\Users\O^'Brien ^& Sons && connector.exe hook grok Stop` {
+		t.Fatalf("cmd Hook command = %q", cmd)
 	}
 }
 
