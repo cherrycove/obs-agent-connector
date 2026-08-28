@@ -187,9 +187,10 @@ func grokHookCommandForPlatform(executable, event, goos, requestedShell string, 
 	case grokHookShellCMD:
 		// Grok passes the complete Hook command to cmd.exe as a regular Rust
 		// process argument. Embedded double quotes are escaped for the C argv
-		// convention before cmd.exe sees them, so use cmd's caret escaping for
-		// path separators instead of a quoted executable token.
-		return escapeCMDToken(executable) + suffix
+		// convention before cmd.exe sees them. The cd built-in accepts directory
+		// paths containing spaces without quotes, so change directories first and
+		// then invoke the connector by its stable, space-free file name.
+		return grokCMDHookCommand(executable, suffix)
 	case grokHookShellGitBash:
 		return quotePOSIXShell(strings.ReplaceAll(executable, `\`, "/")) + suffix
 	default:
@@ -227,11 +228,24 @@ func quotePOSIXShell(value string) string {
 	return `'` + strings.ReplaceAll(value, `'`, `'"'"'`) + `'`
 }
 
-func escapeCMDToken(value string) string {
+func grokCMDHookCommand(executable, suffix string) string {
+	separator := strings.LastIndexAny(executable, `\/`)
+	if separator < 0 {
+		return escapeCMDControlCharacters(executable) + suffix
+	}
+	directory := executable[:separator]
+	if separator == 2 && len(executable) > 2 && executable[1] == ':' {
+		directory = executable[:separator+1]
+	}
+	name := executable[separator+1:]
+	return "cd /d " + escapeCMDControlCharacters(directory) + " && " + escapeCMDControlCharacters(name) + suffix
+}
+
+func escapeCMDControlCharacters(value string) string {
 	var escaped strings.Builder
 	for _, char := range value {
 		switch char {
-		case ' ', '\t', '&', '<', '>', '[', ']', '|', '{', '}', '^', '=', ';', '!', '\'', '+', ',', '`', '~', '(', ')':
+		case '&', '<', '>', '[', ']', '|', '{', '}', '^', '=', ';', '!', '\'', '+', ',', '`', '~', '(', ')':
 			escaped.WriteRune('^')
 		}
 		escaped.WriteRune(char)
