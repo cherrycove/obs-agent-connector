@@ -147,7 +147,7 @@ func TestGrokHookCommandUsesSelectedPlatformShell(t *testing.T) {
 		{name: "windows default", goos: "windows", want: `& 'C:\Program Files\Guance\obs-agent-connector.exe' hook grok Stop`},
 		{name: "PowerShell 7", goos: "windows", requested: "pwsh", want: `& 'C:\Program Files\Guance\obs-agent-connector.exe' hook grok Stop`},
 		{name: "Windows PowerShell", goos: "windows", requested: "powershell", want: `& 'C:\Program Files\Guance\obs-agent-connector.exe' hook grok Stop`},
-		{name: "cmd override", goos: "windows", requested: "cmd", want: `"C:\Program Files\Guance\obs-agent-connector.exe" hook grok Stop`},
+		{name: "cmd override", goos: "windows", requested: "cmd", want: `C:\Program^ Files\Guance\obs-agent-connector.exe hook grok Stop`},
 		{name: "Git Bash override", goos: "windows", requested: "bash", bashAvailable: true, want: `'C:/Program Files/Guance/obs-agent-connector.exe' hook grok Stop`},
 		{name: "missing Git Bash falls back", goos: "windows", requested: "bash", want: `& 'C:\Program Files\Guance\obs-agent-connector.exe' hook grok Stop`},
 		{name: "unknown override follows default", goos: "windows", requested: "fish", want: `& 'C:\Program Files\Guance\obs-agent-connector.exe' hook grok Stop`},
@@ -170,6 +170,10 @@ func TestGrokHookCommandEscapesShellSpecificPaths(t *testing.T) {
 	gitBash := grokHookCommandForPlatform(`C:\Users\O'Brien\connector.exe`, "Stop", "windows", "bash", true)
 	if gitBash != `'C:/Users/O'"'"'Brien/connector.exe' hook grok Stop` {
 		t.Fatalf("Git Bash Hook command = %q", gitBash)
+	}
+	cmd := grokHookCommandForPlatform(`C:\Users\O'Brien & Sons\connector.exe`, "Stop", "windows", "cmd", false)
+	if cmd != `C:\Users\O^'Brien^ ^&^ Sons\connector.exe hook grok Stop` {
+		t.Fatalf("cmd Hook command = %q", cmd)
 	}
 }
 

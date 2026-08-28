@@ -185,7 +185,11 @@ func grokHookCommandForPlatform(executable, event, goos, requestedShell string, 
 		// when the executable path is quoted.
 		return "& " + quotePowerShellLiteral(executable) + suffix
 	case grokHookShellCMD:
-		return quoteHookCommand(executable) + suffix
+		// Grok passes the complete Hook command to cmd.exe as a regular Rust
+		// process argument. Embedded double quotes are escaped for the C argv
+		// convention before cmd.exe sees them, so use cmd's caret escaping for
+		// path separators instead of a quoted executable token.
+		return escapeCMDToken(executable) + suffix
 	case grokHookShellGitBash:
 		return quotePOSIXShell(strings.ReplaceAll(executable, `\`, "/")) + suffix
 	default:
@@ -221,6 +225,18 @@ func quotePowerShellLiteral(value string) string {
 
 func quotePOSIXShell(value string) string {
 	return `'` + strings.ReplaceAll(value, `'`, `'"'"'`) + `'`
+}
+
+func escapeCMDToken(value string) string {
+	var escaped strings.Builder
+	for _, char := range value {
+		switch char {
+		case ' ', '\t', '&', '<', '>', '[', ']', '|', '{', '}', '^', '=', ';', '!', '\'', '+', ',', '`', '~', '(', ')':
+			escaped.WriteRune('^')
+		}
+		escaped.WriteRune(char)
+	}
+	return escaped.String()
 }
 
 func findGrokGitBash() string {
