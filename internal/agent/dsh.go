@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,14 +39,54 @@ func dshPlugin() Definition {
 
 func resolveDshPlugin(p Definition) Definition { return withDshProfile(p, dshProfile()) }
 
-func resolveDshForInstall(p Definition) (Definition, error) { return resolveDshPlugin(p), nil }
+func resolveDshForInstall(p Definition) (Definition, error) {
+	resolved := resolveDshPlugin(p)
+	if command, ok := resolveDshCommandPath(); ok {
+		resolved.AgentCommand = command
+		return resolved, nil
+	}
+	return Definition{}, fmt.Errorf("dsh CLI was not found; install DeepSeek Harness CLI or set DSH_BINARY before installing its plugin")
+}
 
 func resolveDshForDiscovery(p Definition) (Definition, bool) {
 	resolved := resolveDshPlugin(p)
-	if _, err := exec.LookPath(resolved.AgentCommand); err == nil || PathExists(ExpandHome(dshHome())) {
+	if command, ok := resolveDshCommandPath(); ok {
+		resolved.AgentCommand = command
+		return resolved, true
+	}
+	if PathExists(ExpandHome(dshHome())) {
 		return resolved, true
 	}
 	return Definition{}, false
+}
+
+func resolveDshCommandPath() (string, bool) {
+	candidates := []string{
+		strings.TrimSpace(os.Getenv("DSH_BINARY")),
+		strings.TrimSpace(os.Getenv("DEEPSEEK_HARNESS_BINARY")),
+		strings.TrimSpace(os.Getenv("DSH_CLI_PATH")),
+	}
+	if pathCommand, err := exec.LookPath("dsh"); err == nil {
+		candidates = append(candidates, pathCommand)
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if absolute, err := filepath.Abs(candidate); err == nil {
+			candidate = absolute
+		}
+		if _, ok := seen[candidate]; ok {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 func withDshProfile(p Definition, profile string) Definition {
