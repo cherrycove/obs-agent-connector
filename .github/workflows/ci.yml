@@ -45,3 +45,17 @@ jobs:
 
       - name: Build release artifacts
         run: ./scripts/build-release.sh
+
+  windows-grok-hook-smoke:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run Grok Windows Hook shell tests
+        run: go test ./internal/install -run '^TestGrokWindowsHookCommandExecutes' -count=1

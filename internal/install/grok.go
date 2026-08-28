@@ -3,6 +3,7 @@ package install
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -146,7 +147,7 @@ func writeGrokHooks(path string, settings map[string]any, executable string) err
 		group := map[string]any{
 			"hooks": []any{map[string]any{
 				"type":    "command",
-				"command": quoteHookCommand(executable) + " hook grok " + event,
+				"command": grokHookCommand(executable, event),
 				"timeout": 5,
 			}},
 		}
@@ -156,6 +157,94 @@ func writeGrokHooks(path string, settings map[string]any, executable string) err
 		hooks[event] = append(next, group)
 	}
 	return writeJSONAtomic(path, settings)
+}
+
+type grokHookShell string
+
+const (
+	grokHookShellPOSIX      grokHookShell = "posix"
+	grokHookShellPowerShell grokHookShell = "powershell"
+	grokHookShellCMD        grokHookShell = "cmd"
+	grokHookShellGitBash    grokHookShell = "bash"
+)
+
+func grokHookCommand(executable, event string) string {
+	bashAvailable := false
+	if runtime.GOOS == "windows" {
+		bashAvailable = findGrokGitBash() != ""
+	}
+	return grokHookCommandForPlatform(executable, event, runtime.GOOS, os.Getenv("GROK_SHELL"), bashAvailable)
+}
+
+func grokHookCommandForPlatform(executable, event, goos, requestedShell string, bashAvailable bool) string {
+	suffix := " hook grok " + event
+	switch resolveGrokHookShell(goos, requestedShell, bashAvailable) {
+	case grokHookShellPowerShell:
+		// Grok routes Windows Hook commands through its selected shell. Both
+		// PowerShell 7 and Windows PowerShell 5.1 require the call operator
+		// when the executable path is quoted.
+		return "& " + quotePowerShellLiteral(executable) + suffix
+	case grokHookShellCMD:
+		return quoteHookCommand(executable) + suffix
+	case grokHookShellGitBash:
+		return quotePOSIXShell(strings.ReplaceAll(executable, `\`, "/")) + suffix
+	default:
+		return quoteHookCommand(executable) + suffix
+	}
+}
+
+func resolveGrokHookShell(goos, requestedShell string, bashAvailable bool) grokHookShell {
+	if goos != "windows" {
+		return grokHookShellPOSIX
+	}
+	switch strings.ToLower(strings.TrimSpace(requestedShell)) {
+	case "cmd", "cmd.exe":
+		return grokHookShellCMD
+	case "bash", "gitbash", "git-bash":
+		if bashAvailable {
+			return grokHookShellGitBash
+		}
+		return grokHookShellPowerShell
+	case "pwsh", "powershell":
+		return grokHookShellPowerShell
+	default:
+		// This mirrors Grok Build's normal Windows cascade: pwsh first,
+		// Windows PowerShell second, and PowerShell again as the final
+		// fallback when no explicit recognized override is active.
+		return grokHookShellPowerShell
+	}
+}
+
+func quotePowerShellLiteral(value string) string {
+	return `'` + strings.ReplaceAll(value, `'`, `''`) + `'`
+}
+
+func quotePOSIXShell(value string) string {
+	return `'` + strings.ReplaceAll(value, `'`, `'"'"'`) + `'`
+}
+
+func findGrokGitBash() string {
+	bases := []struct {
+		root  string
+		parts []string
+	}{
+		{root: os.Getenv("PROGRAMFILES"), parts: []string{"Git", "bin", "bash.exe"}},
+		{root: os.Getenv("PROGRAMFILES(X86)"), parts: []string{"Git", "bin", "bash.exe"}},
+		{root: os.Getenv("LOCALAPPDATA"), parts: []string{"Programs", "Git", "bin", "bash.exe"}},
+	}
+	for _, base := range bases {
+		if base.root == "" {
+			continue
+		}
+		candidate := filepath.Join(append([]string{base.root}, base.parts...)...)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	if path, err := exec.LookPath("bash.exe"); err == nil && strings.Contains(strings.ToLower(path), "git") {
+		return path
+	}
+	return ""
 }
 
 func grokHooksObject(settings map[string]any) (map[string]any, error) {
