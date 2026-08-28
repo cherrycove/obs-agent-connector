@@ -1,0 +1,2 @@
+{"event":"UserPromptSubmit","recorded_unix_nano":200000000000,"payload":{"hookEventName":"UserPromptSubmit","sessionId":"synthetic-failure-session","promptId":"synthetic-failure-prompt","prompt":"Trigger a synthetic failure."}}
+{"event":"StopFailure","recorded_unix_nano":201000000000,"payload":{"hookEventName":"StopFailure","sessionId":"synthetic-failure-session","promptId":"synthetic-failure-prompt","error":"rate_limit","errorDetails":"Synthetic retryable failure."}}

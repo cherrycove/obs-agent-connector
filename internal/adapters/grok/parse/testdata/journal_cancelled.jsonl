@@ -1,0 +1,2 @@
+{"event":"UserPromptSubmit","recorded_unix_nano":300000000000,"payload":{"hookEventName":"UserPromptSubmit","sessionId":"synthetic-cancel-session","promptId":"synthetic-cancel-prompt","prompt":"Cancel the synthetic turn."}}
+{"event":"StopCancelled","recorded_unix_nano":301000000000,"payload":{"hookEventName":"StopCancelled","sessionId":"synthetic-cancel-session","promptId":"synthetic-cancel-prompt","reason":"user_interrupt","cancelledBy":"user","lastAssistantMessage":"Synthetic partial answer."}}

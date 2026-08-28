@@ -27,7 +27,7 @@ func TestBuildTurnAssemblesCursorPromptResponseAndTools(t *testing.T) {
 	if turn.SessionID != "conv-1" || turn.TurnID != "turn-1" || turn.FinalStatus != model.FinalStatusCompleted {
 		t.Fatalf("unexpected turn identity: %#v", turn)
 	}
-	if turn.InputPreview != "inspect token=secret" || turn.OutputPreview != "done" {
+	if turn.InputPreview != "inspect token=[REDACTED]" || turn.OutputPreview != "done" {
 		t.Fatalf("unexpected previews: %#v", turn)
 	}
 	if len(turn.LLMCalls) != 1 || turn.LLMCalls[0].Provider != "anthropic" || turn.Usage.InputTokens != 12 || turn.Usage.OutputTokens != 4 {

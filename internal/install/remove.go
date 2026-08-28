@@ -51,6 +51,8 @@ func RemoveAdapter(adapter, home string, options RemoveOptions) (RemoveResult, e
 		result, err = removeCursor(home, options)
 	case "dcode":
 		result, err = removeDcode(home, options)
+	case "grok":
+		result, err = removeGrok(home, options)
 	case "kiro":
 		result, err = removeKiro(home, options)
 	default:
@@ -66,6 +68,68 @@ func RemoveAdapter(adapter, home string, options RemoveOptions) (RemoveResult, e
 		}
 		result.ConfigRemoved = true
 		result.ManagedFilesRemoved = true
+	}
+	return result, nil
+}
+
+func removeGrok(home string, options RemoveOptions) (RemoveResult, error) {
+	result := RemoveResult{
+		Adapter:    "grok",
+		HookFile:   filepath.Join(home, ".grok", "hooks", "obs-agent-connector.json"),
+		ConfigFile: agentfiles.ConfigPath(home, "grok"),
+	}
+	value, exists, err := readJSONObjectIfExists(result.HookFile)
+	if err != nil {
+		return result, err
+	}
+	if exists {
+		hooks, err := grokHooksObject(value)
+		if err != nil {
+			return result, err
+		}
+		for _, event := range grokHookEvents {
+			groups, err := grokHookGroups(hooks, event)
+			if err != nil {
+				return result, err
+			}
+			next, changed := removeManagedGrokHandlers(groups)
+			if !changed {
+				continue
+			}
+			result.HookRemoved = true
+			if len(next) == 0 {
+				delete(hooks, event)
+			} else {
+				hooks[event] = next
+			}
+		}
+		if result.HookRemoved {
+			if len(hooks) == 0 {
+				delete(value, "hooks")
+			}
+			if len(value) == 0 {
+				if err := removeFileIfExists(result.HookFile); err != nil {
+					return result, err
+				}
+			} else if err := writeJSONAtomic(result.HookFile, value); err != nil {
+				return result, err
+			}
+		}
+	}
+	if options.PurgeConfig {
+		if err := removeConfigFiles(result.ConfigFile); err != nil {
+			return result, err
+		}
+		result.ConfigRemoved = true
+	}
+	if options.PurgeState {
+		if err := os.RemoveAll(filepath.Join(agentfiles.Directory(home, "grok"), "state")); err != nil {
+			return result, err
+		}
+		if err := removeFileIfExists(agentfiles.HookLogPath(home, "grok")); err != nil {
+			return result, err
+		}
+		result.StatePurged = true
 	}
 	return result, nil
 }

@@ -107,6 +107,37 @@ func installBuiltinAdapter(p agent.Definition, input installInput, noConfig bool
 			printSingleDetail("Note", "Start a new dcode session or run /reload to load the reconciled Hooks.")
 			printSingleDetail("Fallback", "Failed sessions are exported when Dcode emits SessionEnd with reason=other; provider error details remain unavailable.")
 		}
+	case "grok":
+		knownVersion, versionErr := agent.ValidateGrokVersion(p.AgentCommand)
+		if versionErr != nil {
+			err = versionErr
+			break
+		}
+		if !knownVersion {
+			printSingleDetail("Warning", "Could not determine the Grok Build version; continuing installation, but Grok Build "+agent.MinimumGrokVersion+" or later is required.")
+		}
+		resourceAttributes := builtinResourceAttributes(input)
+		if grokVersion, detected := agent.DetectGrokVersion(p.AgentCommand); detected {
+			resourceAttributes = append(resourceAttributes, "agent_version="+grokVersion)
+		}
+		_, err = telemetryinstall.InstallGrok(telemetryinstall.GrokOptions{
+			SourceExecutable:      executable,
+			DestinationExecutable: executable,
+			Endpoint:              input.Endpoint,
+			TracePath:             input.TracePath,
+			MetricsPath:           input.MetricsPath,
+			InstallType:           fixedType,
+			XToken:                input.XToken,
+			Headers:               append([]string{}, input.Headers...),
+			ResourceAttributes:    resourceAttributes,
+			CaptureContent:        input.CaptureContent,
+			MaxChars:              input.MaxChars,
+			Enabled:               input.Enabled,
+			NoConfig:              noConfig,
+		})
+		if err == nil {
+			printSingleDetail("Note", "Start a new Grok session or press l in the Hooks tab to load the reconciled global Hooks.")
+		}
 	case "kiro":
 		_, err = telemetryinstall.InstallKiro(telemetryinstall.KiroOptions{
 			SourceExecutable:      executable,

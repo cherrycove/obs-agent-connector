@@ -43,6 +43,10 @@ func TestBuiltInInstallersUseManagedConfigPaths(t *testing.T) {
 			result, err := InstallCodeBuddy(CodeBuddyOptions{Home: home, SourceExecutable: source, Endpoint: "https://example.invalid", Enabled: &enabled})
 			return result.ConfigFile, err
 		}},
+		{name: "grok", install: func() (string, error) {
+			result, err := InstallGrok(GrokOptions{Home: home, SourceExecutable: source, Endpoint: "https://example.invalid", Enabled: &enabled})
+			return result.ConfigFile, err
+		}},
 		{name: "kiro", install: func() (string, error) {
 			result, err := InstallKiro(KiroOptions{Home: home, SourceExecutable: source, Endpoint: "https://example.invalid", Enabled: &enabled})
 			return result.ConfigFile, err

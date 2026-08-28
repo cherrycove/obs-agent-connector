@@ -29,7 +29,7 @@ build() {
   echo "Building ${goos}/${goarch}"
   GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
     go build -trimpath \
-      -ldflags="-s -w -X github.com/GuanceCloud/obs-agent-connector/internal/app.version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/claude/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/codebuddy/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/codex/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/cursor/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/dcode/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/kiro/buildinfo.Version=${VERSION}" \
+      -ldflags="-s -w -X github.com/GuanceCloud/obs-agent-connector/internal/app.version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/claude/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/codebuddy/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/codex/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/cursor/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/dcode/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/grok/buildinfo.Version=${VERSION} -X github.com/GuanceCloud/obs-agent-connector/internal/adapters/kiro/buildinfo.Version=${VERSION}" \
       -o "${output}" "${ROOT_DIR}/cmd/obs-agent-connector"
 }
 

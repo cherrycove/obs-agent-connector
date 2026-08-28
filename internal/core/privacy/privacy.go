@@ -14,9 +14,13 @@ const (
 )
 
 var (
-	secretKey = regexp.MustCompile(`(?i)(authorization|cookie|password|passwd|secret|token|api[-_]?key|access[-_]?key|private[-_]?key|credential)`)
-	bearer    = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+`)
-	keyValue  = regexp.MustCompile(`(?i)\b(sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,})\b`)
+	secretKey           = regexp.MustCompile(`(?i)(authorization|cookie|password|passwd|secret|token|api[-_]?key|access[-_]?key|private[-_]?key|credential)`)
+	authorizationLine   = regexp.MustCompile(`(?im)\b(authorization|cookie)\s*:\s*[^\r\n]+`)
+	assignedSecret      = regexp.MustCompile(`(?i)\b(password|passwd|secret|token|api[-_ ]?key|access[-_ ]?key)\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)`)
+	bearer              = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+`)
+	keyValue            = regexp.MustCompile(`(?i)\b(sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,})\b`)
+	privateKeyBlock     = regexp.MustCompile(`(?is)-----BEGIN[ \t]+(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY-----.*?-----END[ \t]+(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY-----`)
+	privateKeyRemainder = regexp.MustCompile(`(?is)-----BEGIN[ \t]+(?:[A-Z0-9]+[ \t]+)*PRIVATE[ \t]+KEY-----.*`)
 )
 
 func Sanitize(value any, maxChars int) any {
@@ -97,6 +101,10 @@ func sanitize(value any, key string, maxChars, depth int) any {
 }
 
 func redactText(value string) string {
+	value = privateKeyBlock.ReplaceAllString(value, "[REDACTED PRIVATE KEY]")
+	value = privateKeyRemainder.ReplaceAllString(value, "[REDACTED PRIVATE KEY]")
+	value = authorizationLine.ReplaceAllString(value, "$1: [REDACTED]")
+	value = assignedSecret.ReplaceAllString(value, "$1=[REDACTED]")
 	value = bearer.ReplaceAllString(value, "Bearer [REDACTED]")
 	return keyValue.ReplaceAllString(value, "[REDACTED]")
 }

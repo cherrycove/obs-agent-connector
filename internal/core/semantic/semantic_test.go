@@ -158,6 +158,38 @@ func TestBuildKeepsExplicitTerminalErrorWithoutContent(t *testing.T) {
 	}
 }
 
+func TestBuildKeepsTerminalTurnWhenContentCaptureIsDisabled(t *testing.T) {
+	now := time.Now().UnixNano()
+	spans := (Builder{}).Build(model.Turn{
+		SessionID:     "session-private",
+		TurnID:        "turn-private",
+		AgentRuntime:  "grok",
+		AgentName:     "Grok Build",
+		StartUnixNano: now,
+		EndUnixNano:   now + int64(time.Second),
+		FinalStatus:   model.FinalStatusCompleted,
+		InputLength:   12,
+		OutputLength:  7,
+		AssistantOutputs: []model.AssistantOutput{{
+			StartUnixNano: now + int64(500*time.Millisecond),
+			EndUnixNano:   now + int64(time.Second),
+			Status:        "completed",
+		}},
+	})
+
+	if len(spans) != 2 || spans[0].Name != "invoke_agent" || spans[1].Name != "assistant" {
+		t.Fatalf("content-free terminal turn must preserve root and assistant spans: %#v", spans)
+	}
+	if spans[0].Attributes["input_length"] != 12 || spans[0].Attributes["output_length"] != 7 {
+		t.Fatalf("content lengths were not preserved: %#v", spans[0].Attributes)
+	}
+	for _, key := range []string{"gen_ai.input.messages", "gen_ai.output.messages", "input_preview", "output_preview"} {
+		if _, exists := spans[0].Attributes[key]; exists {
+			t.Fatalf("content attribute %q must stay absent: %#v", key, spans[0].Attributes)
+		}
+	}
+}
+
 func findSpan(t *testing.T, spans []model.Span, name string) model.Span {
 	t.Helper()
 	for _, span := range spans {

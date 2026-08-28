@@ -1,0 +1,1 @@
+{"hookEventName":"PreToolUse","sessionId":"synthetic-session","transcriptPath":"/synthetic/session/updates.jsonl","toolUseId":"synthetic-tool-no-prompt","toolName":"read_file","toolInput":{"file_path":"/synthetic/input.txt"}}

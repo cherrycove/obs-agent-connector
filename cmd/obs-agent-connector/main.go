@@ -9,6 +9,7 @@ import (
 	codexhook "github.com/GuanceCloud/obs-agent-connector/internal/adapters/codex/hook"
 	cursorhook "github.com/GuanceCloud/obs-agent-connector/internal/adapters/cursor/hook"
 	dcodehook "github.com/GuanceCloud/obs-agent-connector/internal/adapters/dcode/hook"
+	grokhook "github.com/GuanceCloud/obs-agent-connector/internal/adapters/grok/hook"
 	kirohook "github.com/GuanceCloud/obs-agent-connector/internal/adapters/kiro/hook"
 	"github.com/GuanceCloud/obs-agent-connector/internal/app"
 )
@@ -26,6 +27,8 @@ func main() {
 			os.Exit(cursorhook.RunCLI(os.Args[3:]))
 		case "dcode":
 			os.Exit(dcodehook.RunCLI(os.Args[3:]))
+		case "grok":
+			os.Exit(grokhook.RunCLI(os.Args[3:]))
 		case "kiro":
 			os.Exit(kirohook.RunCLI(os.Args[3:]))
 		}
