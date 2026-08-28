@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +51,26 @@ type responseBoundary struct {
 	Complete transcriptRecord
 }
 
+type sessionEventRecord struct {
+	Timestamp     string `json:"ts"`
+	Type          string `json:"type"`
+	SessionID     string `json:"session_id"`
+	SchemaVersion string `json:"schema_version"`
+	ModelID       string `json:"model_id"`
+	Phase         string `json:"phase"`
+	Outcome       string `json:"outcome"`
+	LoopIndex     int64  `json:"loop_index"`
+	UnixNano      int64  `json:"-"`
+}
+
+type sessionTurnBlock struct {
+	StartUnixNano int64
+	EndUnixNano   int64
+	SessionID     string
+	ModelID       string
+	Events        []sessionEventRecord
+}
+
 type toolBoundary struct {
 	ID               string
 	Name             string
@@ -61,6 +82,12 @@ type toolBoundary struct {
 	SubagentType     string
 }
 
+type toolExecutionCluster struct {
+	StartUnixNano int64
+	EndUnixNano   int64
+	ToolIDs       []string
+}
+
 type terminalEvidence struct {
 	Event       JournalEvent
 	Kind        string
@@ -70,6 +97,8 @@ type terminalEvidence struct {
 	Output      string
 	Explicit    bool
 }
+
+const maxSessionEventHookSkew = 2 * time.Second
 
 func ReadTurn(options Options) (model.Turn, bool, error) {
 	if strings.TrimSpace(options.SessionID) == "" {
@@ -105,11 +134,16 @@ func ReadTurn(options Options) (model.Turn, bool, error) {
 	}
 	tools := collectTools(options.Events)
 	responses := collectResponses(records, terminalIndex)
+	eventTurns := make([]sessionTurnBlock, 0)
+	if len(responses) == 0 && strings.TrimSpace(options.TranscriptPath) != "" {
+		eventsPath := filepath.Join(filepath.Dir(options.TranscriptPath), "events.jsonl")
+		eventTurns, _ = readSessionTurnBlocks(eventsPath)
+	}
 	if strings.TrimSpace(prompt) == "" && strings.TrimSpace(output) == "" && len(tools) == 0 && len(responses) == 0 && hookTerminal.Kind == "" {
 		return model.Turn{}, false, nil
 	}
 
-	turn := normalize(options, prompt, output, stopReason, hookTerminal, terminalRecord, responses, tools)
+	turn := normalize(options, prompt, output, stopReason, hookTerminal, terminalRecord, responses, eventTurns, tools)
 	if turn.FinalStatus == model.FinalStatusUnset {
 		return model.Turn{}, false, nil
 	}
@@ -236,6 +270,57 @@ func collectResponses(records []transcriptRecord, terminalIndex int) []responseB
 	return out
 }
 
+func readSessionTurnBlocks(path string) ([]sessionTurnBlock, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	blocks := make([]sessionTurnBlock, 0)
+	var active *sessionTurnBlock
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		var event sessionEventRecord
+		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, event.Timestamp)
+		if err != nil {
+			continue
+		}
+		event.UnixNano = parsed.UnixNano()
+		switch strings.ToLower(strings.TrimSpace(event.Type)) {
+		case "turn_started":
+			active = nil
+			if event.SchemaVersion != "1.0" || strings.TrimSpace(event.SessionID) == "" || strings.TrimSpace(event.ModelID) == "" {
+				continue
+			}
+			active = &sessionTurnBlock{
+				StartUnixNano: event.UnixNano,
+				SessionID:     event.SessionID,
+				ModelID:       strings.TrimSpace(event.ModelID),
+				Events:        []sessionEventRecord{event},
+			}
+		case "turn_ended":
+			if active == nil || event.UnixNano <= active.StartUnixNano {
+				active = nil
+				continue
+			}
+			active.EndUnixNano = event.UnixNano
+			active.Events = append(active.Events, event)
+			blocks = append(blocks, *active)
+			active = nil
+		default:
+			if active != nil && event.UnixNano >= active.StartUnixNano {
+				active.Events = append(active.Events, event)
+			}
+		}
+	}
+	return blocks, scanner.Err()
+}
+
 func collectTools(events []JournalEvent) []toolBoundary {
 	byID := map[string]*toolBoundary{}
 	order := make([]string, 0)
@@ -308,6 +393,7 @@ func normalize(
 	hookTerminal terminalEvidence,
 	terminalRecord *transcriptRecord,
 	responses []responseBoundary,
+	eventTurns []sessionTurnBlock,
 	tools []toolBoundary,
 ) model.Turn {
 	start := latestEventTime(options.Events, "UserPromptSubmit")
@@ -320,6 +406,14 @@ func normalize(
 	}
 	if start <= 0 || start >= end {
 		start = end - int64(time.Millisecond)
+	}
+	var eventTurn *sessionTurnBlock
+	if len(responses) == 0 && terminalRecord != nil {
+		if selected, ok := matchingSessionTurnBlock(eventTurns, options.SessionID, start, end); ok {
+			eventTurn = selected
+			start = minInt64(start, selected.StartUnixNano)
+			end = maxInt64(end, selected.EndUnixNano)
+		}
 	}
 
 	finalStatus := model.FinalStatusCompleted
@@ -352,6 +446,9 @@ func normalize(
 		"request_type":  "user_request",
 		"timing.source": "grok_hooks_and_updates",
 	}
+	if eventTurn != nil {
+		extra["timing.source"] = "grok_events_and_hooks"
+	}
 	if stopReason != "" {
 		extra["grok.stop_reason"] = privacy.Text(stopReason, 128)
 	}
@@ -380,13 +477,23 @@ func normalize(
 		turn.OutputPreview = preview.Text(output, options.MaxChars)
 	}
 
+	toolTriggers := map[string]string{}
 	for index, response := range responses {
 		call := responseCall(response, options.TurnID, index, start, end)
 		turn.LLMCalls = append(turn.LLMCalls, call)
 	}
+	if len(turn.LLMCalls) > 0 {
+		toolTriggers = toolTriggersFromExactResponses(turn.LLMCalls, tools, end)
+	}
 	if len(turn.LLMCalls) == 0 && terminalRecord != nil {
-		if call, ok := singleCallFromTurnUsage(*terminalRecord, options.TurnID, start, end); ok {
+		if calls, triggers, ok := callsFromSessionEvents(eventTurn, *terminalRecord, options.TurnID, start, end, tools); ok {
+			turn.LLMCalls = append(turn.LLMCalls, calls...)
+			toolTriggers = triggers
+		} else if call, ok := singleCallFromTurnUsage(*terminalRecord, options.TurnID, start, end); ok {
 			turn.LLMCalls = append(turn.LLMCalls, call)
+		} else if calls, triggers, ok := callsFromTurnUsageAndToolClusters(*terminalRecord, options.TurnID, start, end, tools); ok {
+			turn.LLMCalls = append(turn.LLMCalls, calls...)
+			toolTriggers = triggers
 		}
 	}
 
@@ -395,7 +502,7 @@ func normalize(
 		arguments := firstNonNil(raw.Pre.Payload["toolInput"], raw.Post.Payload["toolInput"], raw.Pre.Payload["tool_input"], raw.Post.Payload["tool_input"])
 		result := firstNonNil(raw.Post.Payload["toolResult"], raw.Post.Payload["tool_result"])
 		tool := model.ToolCall{
-			CallID: raw.ID, Name: firstNonEmpty(raw.Name, eventToolName(raw.Pre.Payload), eventToolName(raw.Post.Payload), "unknown"),
+			CallID: raw.ID, TriggeringLLMCall: toolTriggers[raw.ID], Name: firstNonEmpty(raw.Name, eventToolName(raw.Pre.Payload), eventToolName(raw.Post.Payload), "unknown"),
 			StartUnixNano: toolStart, EndUnixNano: toolEnd, Status: "ok", ResultStatus: "completed",
 			ExtraAttributes: map[string]any{"timing.source": timingSource},
 		}
@@ -467,6 +574,37 @@ func responseCall(value responseBoundary, turnID string, index int, parentStart,
 		RequestModel: modelName, FinishReasons: stringSlice(stringValue(complete, "stop_reason", "stopReason")),
 		Usage: usage, Status: "ok", ExtraAttributes: map[string]any{"timing.source": "grok_updates"},
 	}
+}
+
+func toolTriggersFromExactResponses(calls []model.LLMCall, tools []toolBoundary, parentEnd int64) map[string]string {
+	triggers := make(map[string]string, len(tools))
+	for _, tool := range tools {
+		if tool.Pre.RecordedNano <= 0 || tool.Post.RecordedNano <= tool.Pre.RecordedNano {
+			continue
+		}
+		matched := -1
+		for index, call := range calls {
+			if !containsStringFold(call.FinishReasons, "tool_use") || call.EndUnixNano <= 0 {
+				continue
+			}
+			upperBound := parentEnd
+			if index+1 < len(calls) {
+				upperBound = calls[index+1].StartUnixNano
+			}
+			if upperBound <= call.EndUnixNano || tool.Pre.RecordedNano < call.EndUnixNano || tool.Post.RecordedNano > upperBound {
+				continue
+			}
+			if matched >= 0 {
+				matched = -2
+				break
+			}
+			matched = index
+		}
+		if matched >= 0 {
+			triggers[tool.ID] = calls[matched].CallID
+		}
+	}
+	return triggers
 }
 
 func responseStartedUsage(update map[string]any) model.Usage {
@@ -542,18 +680,356 @@ func singleCallFromTurnUsage(record transcriptRecord, turnID string, parentStart
 }
 
 func singleUsageModel(value any) (string, bool) {
+	return usageModelForCallCount(value, 1)
+}
+
+func usageModelForCallCount(value any, expectedCalls int64) (string, bool) {
 	models, ok := value.(map[string]any)
 	if !ok || len(models) != 1 {
 		return "", false
 	}
 	for name, raw := range models {
 		modelUsage, ok := raw.(map[string]any)
-		if !ok || int64Value(firstNonNil(modelUsage["modelCalls"], modelUsage["model_calls"])) != 1 {
+		if !ok || int64Value(firstNonNil(modelUsage["modelCalls"], modelUsage["model_calls"])) != expectedCalls {
 			return "", false
 		}
 		return strings.TrimSpace(name), strings.TrimSpace(name) != ""
 	}
 	return "", false
+}
+
+func callsFromSessionEvents(
+	selected *sessionTurnBlock,
+	record transcriptRecord,
+	turnID string,
+	parentStart, parentEnd int64,
+	tools []toolBoundary,
+) ([]model.LLMCall, map[string]string, bool) {
+	usageValue, ok := record.Params.Update["usage"].(map[string]any)
+	if !ok || boolValue(firstNonNil(usageValue["usageIsIncomplete"], usageValue["usage_is_incomplete"])) {
+		return nil, nil, false
+	}
+	modelCalls := int64Value(firstNonNil(usageValue["modelCalls"], usageValue["model_calls"]))
+	if modelCalls <= 0 {
+		return nil, nil, false
+	}
+
+	if selected == nil || selected.StartUnixNano < parentStart || selected.EndUnixNano > parentEnd || selected.EndUnixNano <= selected.StartUnixNano {
+		return nil, nil, false
+	}
+
+	type eventCall struct {
+		LoopIndex     int64
+		StartUnixNano int64
+		EndUnixNano   int64
+		FirstToken    int64
+		FinishReason  string
+	}
+	eventCalls := make([]eventCall, 0, modelCalls)
+	currentLoop := int64(-1)
+	loopReady := false
+	var active *eventCall
+	for _, event := range selected.Events {
+		eventType := strings.ToLower(strings.TrimSpace(event.Type))
+		if eventType == "loop_started" {
+			if active != nil {
+				if event.UnixNano <= active.StartUnixNano {
+					return nil, nil, false
+				}
+				active.EndUnixNano = event.UnixNano
+				eventCalls = append(eventCalls, *active)
+				active = nil
+			}
+			if loopReady {
+				return nil, nil, false
+			}
+			currentLoop = event.LoopIndex
+			loopReady = true
+			continue
+		}
+		if eventType == "phase_changed" {
+			switch strings.ToLower(strings.TrimSpace(event.Phase)) {
+			case "waiting_for_model":
+				if active != nil || currentLoop < 0 || !loopReady {
+					return nil, nil, false
+				}
+				active = &eventCall{LoopIndex: currentLoop, StartUnixNano: event.UnixNano}
+				loopReady = false
+			case "tool_execution":
+				if active != nil {
+					if event.UnixNano <= active.StartUnixNano {
+						return nil, nil, false
+					}
+					active.EndUnixNano = event.UnixNano
+					active.FinishReason = "tool_use"
+					eventCalls = append(eventCalls, *active)
+					active = nil
+				}
+			}
+			continue
+		}
+		if eventType == "first_token" && active != nil && active.FirstToken == 0 && event.UnixNano >= active.StartUnixNano {
+			active.FirstToken = event.UnixNano
+		}
+		if eventType == "turn_ended" && active != nil {
+			if event.UnixNano <= active.StartUnixNano {
+				return nil, nil, false
+			}
+			active.EndUnixNano = event.UnixNano
+			active.FinishReason = firstNonEmpty(stringValue(record.Params.Update, "stop_reason", "stopReason"), event.Outcome)
+			eventCalls = append(eventCalls, *active)
+			active = nil
+		}
+	}
+	if active != nil || loopReady || int64(len(eventCalls)) != modelCalls {
+		return nil, nil, false
+	}
+
+	calls := make([]model.LLMCall, 0, len(eventCalls))
+	for index, eventCall := range eventCalls {
+		if eventCall.StartUnixNano < parentStart || eventCall.EndUnixNano > parentEnd || eventCall.EndUnixNano <= eventCall.StartUnixNano {
+			return nil, nil, false
+		}
+		ttft := float64(0)
+		if eventCall.FirstToken > 0 {
+			if eventCall.FirstToken > eventCall.EndUnixNano {
+				return nil, nil, false
+			}
+			ttft = float64(eventCall.FirstToken-eventCall.StartUnixNano) / float64(time.Millisecond)
+		}
+		calls = append(calls, model.LLMCall{
+			CallID:        derivedID(turnID, "llm", "events", strconv.FormatInt(eventCall.LoopIndex, 10), strconv.Itoa(index)),
+			StartUnixNano: eventCall.StartUnixNano,
+			EndUnixNano:   eventCall.EndUnixNano,
+			RequestModel:  selected.ModelID,
+			FinishReasons: stringSlice(eventCall.FinishReason),
+			TTFTMs:        ttft,
+			Status:        "ok",
+			ExtraAttributes: map[string]any{
+				"timing.source": "grok_events",
+			},
+		})
+	}
+
+	toolTriggers := make(map[string]string, len(tools))
+	for _, tool := range tools {
+		if tool.Pre.RecordedNano <= 0 || tool.Post.RecordedNano <= tool.Pre.RecordedNano {
+			continue
+		}
+		for index := range calls {
+			nextStart := parentEnd
+			if index+1 < len(calls) {
+				nextStart = calls[index+1].StartUnixNano
+			}
+			if tool.Pre.RecordedNano >= calls[index].EndUnixNano && tool.Post.RecordedNano <= nextStart {
+				toolTriggers[tool.ID] = calls[index].CallID
+				break
+			}
+		}
+	}
+	return calls, toolTriggers, true
+}
+
+func matchingSessionTurnBlock(blocks []sessionTurnBlock, sessionID string, hookStart, hookEnd int64) (*sessionTurnBlock, bool) {
+	if strings.TrimSpace(sessionID) == "" || hookStart <= 0 || hookEnd <= hookStart {
+		return nil, false
+	}
+	var selected *sessionTurnBlock
+	for index := range blocks {
+		block := &blocks[index]
+		if block.SessionID != sessionID || block.EndUnixNano <= block.StartUnixNano {
+			continue
+		}
+		if absInt64(block.StartUnixNano-hookStart) > int64(maxSessionEventHookSkew) ||
+			absInt64(block.EndUnixNano-hookEnd) > int64(maxSessionEventHookSkew) {
+			continue
+		}
+		if selected != nil {
+			return nil, false
+		}
+		selected = block
+	}
+	return selected, selected != nil
+}
+
+func callsFromTurnUsageAndToolClusters(
+	record transcriptRecord,
+	turnID string,
+	parentStart, parentEnd int64,
+	tools []toolBoundary,
+) ([]model.LLMCall, map[string]string, bool) {
+	usageValue, ok := record.Params.Update["usage"].(map[string]any)
+	if !ok || boolValue(firstNonNil(usageValue["usageIsIncomplete"], usageValue["usage_is_incomplete"])) {
+		return nil, nil, false
+	}
+	usage := promptUsage(usageValue)
+	if usage == (model.Usage{}) {
+		return nil, nil, false
+	}
+	modelCalls := int64Value(firstNonNil(usageValue["modelCalls"], usageValue["model_calls"]))
+	if modelCalls <= 1 {
+		return nil, nil, false
+	}
+	modelName, ok := usageModelForCallCount(firstNonNil(usageValue["modelUsage"], usageValue["model_usage"]), modelCalls)
+	if !ok {
+		return nil, nil, false
+	}
+	durationMS := int64Value(firstNonNil(usageValue["apiDurationMs"], usageValue["api_duration_ms"]))
+	if durationMS <= 0 || parentEnd <= parentStart || durationMS > (parentEnd-parentStart)/int64(time.Millisecond) {
+		return nil, nil, false
+	}
+
+	clusters, ok := completeToolExecutionClusters(tools, parentStart, parentEnd)
+	if !ok || int64(len(clusters)) != modelCalls-1 {
+		return nil, nil, false
+	}
+	gaps := make([][2]int64, 0, modelCalls)
+	gapStart := parentStart
+	for _, cluster := range clusters {
+		if cluster.StartUnixNano <= gapStart {
+			return nil, nil, false
+		}
+		gaps = append(gaps, [2]int64{gapStart, cluster.StartUnixNano})
+		gapStart = cluster.EndUnixNano
+	}
+	if gapStart >= parentEnd {
+		return nil, nil, false
+	}
+	gaps = append(gaps, [2]int64{gapStart, parentEnd})
+
+	durations, ok := fitDurationAcrossGaps(durationMS*int64(time.Millisecond), gaps)
+	if !ok {
+		return nil, nil, false
+	}
+	calls := make([]model.LLMCall, 0, len(gaps))
+	toolTriggers := make(map[string]string, len(tools))
+	terminalReason := stringValue(record.Params.Update, "stop_reason", "stopReason")
+	for index, gap := range gaps {
+		callID := derivedID(turnID, "llm", "hook-boundary", strconv.Itoa(index))
+		finishReason := terminalReason
+		if index < len(clusters) {
+			finishReason = "tool_use"
+			for _, toolID := range clusters[index].ToolIDs {
+				toolTriggers[toolID] = callID
+			}
+		}
+		calls = append(calls, model.LLMCall{
+			CallID:        callID,
+			StartUnixNano: gap[1] - durations[index],
+			EndUnixNano:   gap[1],
+			ResponseModel: modelName,
+			FinishReasons: stringSlice(finishReason),
+			Status:        "ok",
+			ExtraAttributes: map[string]any{
+				"timing.source":           "grok_hook_boundaries",
+				"gtrace.synthetic":        true,
+				"gtrace.timing.estimated": true,
+			},
+		})
+	}
+	return calls, toolTriggers, true
+}
+
+func completeToolExecutionClusters(tools []toolBoundary, parentStart, parentEnd int64) ([]toolExecutionCluster, bool) {
+	if len(tools) == 0 {
+		return nil, false
+	}
+	intervals := make([]toolExecutionCluster, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Pre.RecordedNano <= 0 || tool.Post.RecordedNano <= tool.Pre.RecordedNano {
+			return nil, false
+		}
+		start := tool.Pre.RecordedNano
+		end := tool.Post.RecordedNano
+		durationMS := int64Value(firstNonNil(tool.Post.Payload["durationMs"], tool.Post.Payload["duration_ms"]))
+		if durationMS > 0 {
+			if end <= parentStart || durationMS > (end-parentStart)/int64(time.Millisecond) {
+				return nil, false
+			}
+			start = end - durationMS*int64(time.Millisecond)
+		}
+		if start < parentStart || end > parentEnd || end <= start {
+			return nil, false
+		}
+		intervals = append(intervals, toolExecutionCluster{
+			StartUnixNano: start,
+			EndUnixNano:   end,
+			ToolIDs:       []string{tool.ID},
+		})
+	}
+	sort.Slice(intervals, func(left, right int) bool {
+		if intervals[left].StartUnixNano != intervals[right].StartUnixNano {
+			return intervals[left].StartUnixNano < intervals[right].StartUnixNano
+		}
+		if intervals[left].EndUnixNano != intervals[right].EndUnixNano {
+			return intervals[left].EndUnixNano < intervals[right].EndUnixNano
+		}
+		return intervals[left].ToolIDs[0] < intervals[right].ToolIDs[0]
+	})
+
+	clusters := make([]toolExecutionCluster, 0, len(intervals))
+	for _, interval := range intervals {
+		if len(clusters) == 0 || interval.StartUnixNano > clusters[len(clusters)-1].EndUnixNano {
+			clusters = append(clusters, interval)
+			continue
+		}
+		cluster := &clusters[len(clusters)-1]
+		if interval.EndUnixNano > cluster.EndUnixNano {
+			cluster.EndUnixNano = interval.EndUnixNano
+		}
+		cluster.ToolIDs = append(cluster.ToolIDs, interval.ToolIDs...)
+	}
+	return clusters, true
+}
+
+func fitDurationAcrossGaps(totalDuration int64, gaps [][2]int64) ([]int64, bool) {
+	if totalDuration <= 0 || len(gaps) == 0 || totalDuration < int64(len(gaps)) {
+		return nil, false
+	}
+	capacities := make([]int64, len(gaps))
+	suffixCapacity := make([]int64, len(gaps)+1)
+	for index := len(gaps) - 1; index >= 0; index-- {
+		capacity := gaps[index][1] - gaps[index][0]
+		if capacity <= 0 || suffixCapacity[index+1] > int64(^uint64(0)>>1)-capacity {
+			return nil, false
+		}
+		capacities[index] = capacity
+		suffixCapacity[index] = suffixCapacity[index+1] + capacity
+	}
+	if totalDuration > suffixCapacity[0] {
+		return nil, false
+	}
+
+	durations := make([]int64, len(gaps))
+	remaining := totalDuration
+	for index, capacity := range capacities {
+		remainingGaps := int64(len(gaps) - index)
+		duration := remaining / remainingGaps
+		minimumForRest := remainingGaps - 1
+		minimumHere := remaining - suffixCapacity[index+1]
+		if minimumHere < 1 {
+			minimumHere = 1
+		}
+		maximumHere := remaining - minimumForRest
+		if maximumHere > capacity {
+			maximumHere = capacity
+		}
+		if duration < minimumHere {
+			duration = minimumHere
+		}
+		if duration > maximumHere {
+			duration = maximumHere
+		}
+		if duration <= 0 || duration > capacity {
+			return nil, false
+		}
+		durations[index] = duration
+		remaining -= duration
+	}
+	if remaining != 0 {
+		return nil, false
+	}
+	return durations, true
 }
 
 func findTerminalEvent(events []JournalEvent) terminalEvidence {
@@ -769,6 +1245,15 @@ func stringSlice(value string) []string {
 	return []string{strings.TrimSpace(value)}
 }
 
+func containsStringFold(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(expected)) {
+			return true
+		}
+	}
+	return false
+}
+
 func int64Value(value any) int64 {
 	switch current := value.(type) {
 	case float64:
@@ -831,6 +1316,20 @@ func maxInt64(left, right int64) int64 {
 		return left
 	}
 	return right
+}
+
+func minInt64(left, right int64) int64 {
+	if left < right {
+		return left
+	}
+	return right
+}
+
+func absInt64(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func derivedID(values ...string) string {

@@ -73,8 +73,8 @@ func TestReadTurnRequiresDurableTerminalAndBuildsPairedResponses(t *testing.T) {
 		CaptureContent: "preview", MaxChars: 20_000, ResourceAttributes: map[string]any{"team": "platform"},
 		Events: []JournalEvent{
 			{Event: "UserPromptSubmit", RecordedNano: start, Payload: map[string]any{"prompt": "inspect the skill"}},
-			{Event: "PreToolUse", RecordedNano: start + int64(time.Second), Payload: map[string]any{"toolUseId": "tool-1", "toolName": "read_file", "toolInput": map[string]any{"file_path": "/synthetic/skills/example/SKILL.md"}}},
-			{Event: "PostToolUse", RecordedNano: start + 2*int64(time.Second), Payload: map[string]any{"toolUseId": "tool-1", "toolName": "read_file", "toolResult": "contents", "durationMs": 250}},
+			{Event: "PreToolUse", RecordedNano: start + 2500*int64(time.Millisecond), Payload: map[string]any{"toolUseId": "tool-1", "toolName": "read_file", "toolInput": map[string]any{"file_path": "/synthetic/skills/example/SKILL.md"}}},
+			{Event: "PostToolUse", RecordedNano: start + 2750*int64(time.Millisecond), Payload: map[string]any{"toolUseId": "tool-1", "toolName": "read_file", "toolResult": "contents", "durationMs": 250}},
 			{Event: "Stop", RecordedNano: end, Payload: map[string]any{"reason": "end_turn", "stopHookActive": false, "lastAssistantMessage": "done"}},
 		},
 	})
@@ -98,6 +98,9 @@ func TestReadTurnRequiresDurableTerminalAndBuildsPairedResponses(t *testing.T) {
 	}
 	if len(turn.ToolCalls) != 1 || turn.ToolCalls[0].Skill == nil || turn.ToolCalls[0].Skill.Name != "example" {
 		t.Fatalf("reliable SKILL.md read was not mapped: %#v", turn.ToolCalls)
+	}
+	if turn.ToolCalls[0].TriggeringLLMCall != "message-1" {
+		t.Fatalf("exact response did not trigger the tool: %#v", turn.ToolCalls[0])
 	}
 	if turn.ToolCalls[0].Skill.Path != "/synthetic/skills/example/SKILL.md" || turn.ToolCalls[0].Command != "" {
 		t.Fatalf("unexpected skill/tool content: %#v", turn.ToolCalls[0])
@@ -127,6 +130,9 @@ func TestReadTurnRequiresDurableTerminalAndBuildsPairedResponses(t *testing.T) {
 		}
 		if span.Name == "tool:read_file" {
 			toolID = span.SpanID
+			if span.Attributes["triggered_by.llm_span_id"] != spans[1].SpanID {
+				t.Fatalf("tool did not reference its exact response span: %#v", span)
+			}
 		}
 		if span.Name == "assistant" && span.Attributes["gen_ai.usage.input_tokens"] != nil {
 			t.Fatalf("assistant span carried token usage: %#v", span.Attributes)
@@ -147,6 +153,75 @@ func TestReadTurnRequiresDurableTerminalAndBuildsPairedResponses(t *testing.T) {
 	}
 	if tokenPoints != 4 {
 		t.Fatalf("expected input/output token points for exactly two LLM calls, got %d", tokenPoints)
+	}
+}
+
+func TestExactResponseToolCorrelationRequiresCompleteCausalGap(t *testing.T) {
+	calls := []model.LLMCall{
+		{CallID: "llm-tool", EndUnixNano: 20, FinishReasons: []string{"tool_use"}},
+		{CallID: "llm-final", StartUnixNano: 40, EndUnixNano: 50, FinishReasons: []string{"end_turn"}},
+	}
+	tools := []toolBoundary{
+		{ID: "valid", Pre: JournalEvent{RecordedNano: 21}, Post: JournalEvent{RecordedNano: 39}},
+		{ID: "incomplete", Pre: JournalEvent{RecordedNano: 21}},
+		{ID: "before-response-end", Pre: JournalEvent{RecordedNano: 19}, Post: JournalEvent{RecordedNano: 30}},
+		{ID: "after-next-response", Pre: JournalEvent{RecordedNano: 21}, Post: JournalEvent{RecordedNano: 41}},
+	}
+
+	triggers := toolTriggersFromExactResponses(calls, tools, 60)
+	if len(triggers) != 1 || triggers["valid"] != "llm-tool" {
+		t.Fatalf("exact response correlation accepted incomplete or ambiguous boundaries: %#v", triggers)
+	}
+}
+
+func TestSessionEventLoopBoundaryDoesNotInventToolFinishReason(t *testing.T) {
+	selected := &sessionTurnBlock{
+		StartUnixNano: 100,
+		EndUnixNano:   600,
+		SessionID:     "session-events",
+		ModelID:       "grok-test",
+		Events: []sessionEventRecord{
+			{Type: "loop_started", LoopIndex: 0, UnixNano: 110},
+			{Type: "phase_changed", Phase: "waiting_for_model", UnixNano: 120},
+			{Type: "loop_started", LoopIndex: 1, UnixNano: 300},
+			{Type: "phase_changed", Phase: "waiting_for_model", UnixNano: 310},
+			{Type: "turn_ended", Outcome: "completed", UnixNano: 600},
+		},
+	}
+	record := transcriptRecord{}
+	record.Params.Update = map[string]any{
+		"stop_reason": "end_turn",
+		"usage":       map[string]any{"modelCalls": 2},
+	}
+
+	calls, _, ok := callsFromSessionEvents(selected, record, "turn-events", 100, 600, nil)
+	if !ok || len(calls) != 2 {
+		t.Fatalf("session event calls were not reconstructed: ok=%t calls=%#v", ok, calls)
+	}
+	if len(calls[0].FinishReasons) != 0 || len(calls[1].FinishReasons) != 1 || calls[1].FinishReasons[0] != "end_turn" {
+		t.Fatalf("loop boundary invented a tool finish reason: %#v", calls)
+	}
+}
+
+func TestMatchingSessionTurnBlockRequiresUniqueBoundedEndpoints(t *testing.T) {
+	hookStart := int64(10 * time.Second)
+	hookEnd := int64(20 * time.Second)
+	matching := sessionTurnBlock{
+		StartUnixNano: hookStart - int64(maxSessionEventHookSkew),
+		EndUnixNano:   hookEnd + int64(maxSessionEventHookSkew),
+		SessionID:     "session-match",
+	}
+
+	if selected, ok := matchingSessionTurnBlock([]sessionTurnBlock{matching}, "session-match", hookStart, hookEnd); !ok || selected == nil || selected.StartUnixNano != matching.StartUnixNano || selected.EndUnixNano != matching.EndUnixNano {
+		t.Fatalf("inclusive skew boundary did not match: ok=%t selected=%#v", ok, selected)
+	}
+	outOfBounds := matching
+	outOfBounds.StartUnixNano--
+	if selected, ok := matchingSessionTurnBlock([]sessionTurnBlock{outOfBounds}, "session-match", hookStart, hookEnd); ok || selected != nil {
+		t.Fatalf("out-of-bounds event turn matched: %#v", selected)
+	}
+	if selected, ok := matchingSessionTurnBlock([]sessionTurnBlock{matching, matching}, "session-match", hookStart, hookEnd); ok || selected != nil {
+		t.Fatalf("ambiguous event turns matched: %#v", selected)
 	}
 }
 
@@ -224,6 +299,248 @@ func TestReadTurnDoesNotCopyMultiCallAggregateToLLM(t *testing.T) {
 		if metric.Name == "gen_ai.client.token.usage" {
 			t.Fatalf("multi-call aggregate created an unproven token metric: %#v", metric)
 		}
+	}
+}
+
+func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
+	turn, ok, err := ReadTurn(Options{
+		TranscriptPath: filepath.Join("testdata", "updates_turn_usage_multi_tools.jsonl"),
+		SessionID:      "synthetic-events-session",
+		TurnID:         "synthetic-events-prompt",
+		CaptureContent: "preview",
+		MaxChars:       1_000,
+		Events:         readJournalFixture(t, filepath.Join("testdata", "journal_turn_usage_multi_tools.jsonl")),
+	})
+	if err != nil || !ok {
+		t.Fatalf("ReadTurn() ok=%t err=%v", ok, err)
+	}
+	if len(turn.LLMCalls) != 2 {
+		t.Fatalf("session events did not produce two calls: %#v", turn.LLMCalls)
+	}
+	firstStart := mustRFC3339Nano(t, "2026-08-27T03:27:08.771Z")
+	firstEnd := mustRFC3339Nano(t, "2026-08-27T03:27:20.639Z")
+	secondStart := mustRFC3339Nano(t, "2026-08-27T03:27:45.563Z")
+	secondEnd := mustRFC3339Nano(t, "2026-08-27T03:28:03.172Z")
+	eventTurnStart := mustRFC3339Nano(t, "2026-08-27T03:27:08.347Z")
+	if turn.LLMCalls[0].StartUnixNano != firstStart || turn.LLMCalls[0].EndUnixNano != firstEnd ||
+		turn.LLMCalls[1].StartUnixNano != secondStart || turn.LLMCalls[1].EndUnixNano != secondEnd {
+		t.Fatalf("session event boundaries were not preserved: %#v", turn.LLMCalls)
+	}
+	if turn.StartUnixNano != eventTurnStart || turn.EndUnixNano != secondEnd || turn.ExtraAttributes["timing.source"] != "grok_events_and_hooks" {
+		t.Fatalf("root did not expand across bounded Hook delivery skew: %#v", turn)
+	}
+	for _, call := range turn.LLMCalls {
+		if call.RequestModel != "grok-4.6" || call.Usage != (model.Usage{}) || call.ExtraAttributes["timing.source"] != "grok_events" {
+			t.Fatalf("unexpected event-derived LLM call: %#v", call)
+		}
+		if call.ExtraAttributes["gtrace.synthetic"] != nil || call.ExtraAttributes["gtrace.timing.estimated"] != nil {
+			t.Fatalf("real event boundary was marked synthetic: %#v", call.ExtraAttributes)
+		}
+	}
+	if turn.LLMCalls[0].TTFTMs != 0 || turn.LLMCalls[1].TTFTMs != 10909 {
+		t.Fatalf("first-token timing was not attached to its call: %#v", turn.LLMCalls)
+	}
+	if turn.Usage.InputTokens != 38315 || turn.Usage.OutputTokens != 155 || turn.Usage.ReasoningTokens != 61 {
+		t.Fatalf("aggregate usage was not retained on the root: %#v", turn.Usage)
+	}
+	for _, tool := range turn.ToolCalls {
+		if tool.TriggeringLLMCall != turn.LLMCalls[0].CallID {
+			t.Fatalf("parallel tool was not associated with the preceding LLM: %#v", tool)
+		}
+	}
+
+	spans := (semantic.Builder{ScopeName: "gtrace-grok-test", ScopeVersion: "test"}).Build(turn)
+	if len(spans) != 7 || spans[0].Name != "invoke_agent" || spans[1].Name != "llm" || spans[2].Name != "llm" || spans[6].Name != "assistant" {
+		t.Fatalf("unexpected event-derived span tree: %#v", spans)
+	}
+	rootID := spans[0].SpanID
+	triggerID := spans[1].SpanID
+	for _, span := range spans[1:] {
+		if span.ParentID != rootID {
+			t.Fatalf("%s was not a direct root child: %#v", span.Name, span)
+		}
+		if strings.HasPrefix(span.Name, "tool:") && span.Attributes["triggered_by.llm_span_id"] != triggerID {
+			t.Fatalf("tool span lacked the event-derived LLM association: %#v", span)
+		}
+	}
+	for _, metric := range coremetrics.Build(spans) {
+		if metric.Name == "gen_ai.client.token.usage" {
+			t.Fatalf("root aggregate tokens leaked into an event-derived per-call metric: %#v", metric)
+		}
+	}
+}
+
+func TestReadTurnSynthesizesCallsFromCompleteHookClusters(t *testing.T) {
+	tempDir := t.TempDir()
+	updates, err := os.ReadFile(filepath.Join("testdata", "updates_turn_usage_multi_tools.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcriptPath := filepath.Join(tempDir, "updates.jsonl")
+	if err := os.WriteFile(transcriptPath, updates, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	turn, ok, err := ReadTurn(Options{
+		TranscriptPath: transcriptPath,
+		SessionID:      "synthetic-events-session",
+		TurnID:         "synthetic-events-prompt",
+		CaptureContent: "preview",
+		MaxChars:       1_000,
+		Events:         readJournalFixture(t, filepath.Join("testdata", "journal_turn_usage_multi_tools.jsonl")),
+	})
+	if err != nil || !ok {
+		t.Fatalf("ReadTurn() ok=%t err=%v", ok, err)
+	}
+	if len(turn.LLMCalls) != 2 {
+		t.Fatalf("hook cluster fallback did not produce two calls: %#v", turn.LLMCalls)
+	}
+	totalDuration := int64(0)
+	for _, call := range turn.LLMCalls {
+		totalDuration += call.EndUnixNano - call.StartUnixNano
+		if call.ResponseModel != "grok-4.6" || call.Usage != (model.Usage{}) {
+			t.Fatalf("aggregate model or tokens were mapped incorrectly: %#v", call)
+		}
+		if call.ExtraAttributes["timing.source"] != "grok_hook_boundaries" || call.ExtraAttributes["gtrace.synthetic"] != true || call.ExtraAttributes["gtrace.timing.estimated"] != true {
+			t.Fatalf("synthetic timing markers are incomplete: %#v", call.ExtraAttributes)
+		}
+	}
+	if totalDuration != int64(29385*time.Millisecond) {
+		t.Fatalf("estimated calls total %s, want 29.385s", time.Duration(totalDuration))
+	}
+	for _, tool := range turn.ToolCalls {
+		if tool.TriggeringLLMCall != turn.LLMCalls[0].CallID {
+			t.Fatalf("parallel tool was not associated with the preceding synthetic LLM: %#v", tool)
+		}
+	}
+
+	spans := (semantic.Builder{}).Build(turn)
+	if len(spans) != 7 || spans[0].Name != "invoke_agent" || spans[1].Name != "llm" || spans[2].Name != "llm" || spans[6].Name != "assistant" {
+		t.Fatalf("unexpected synthetic span tree: %#v", spans)
+	}
+	rootID := spans[0].SpanID
+	triggerID := spans[1].SpanID
+	for _, span := range spans[1:] {
+		if span.ParentID != rootID {
+			t.Fatalf("%s was not a direct root child: %#v", span.Name, span)
+		}
+		if strings.HasPrefix(span.Name, "tool:") && span.Attributes["triggered_by.llm_span_id"] != triggerID {
+			t.Fatalf("tool span lacked the synthetic LLM association: %#v", span)
+		}
+	}
+	for _, metric := range coremetrics.Build(spans) {
+		if metric.Name == "gen_ai.client.token.usage" {
+			t.Fatalf("aggregate turn tokens were split into synthetic call metrics: %#v", metric)
+		}
+	}
+}
+
+func TestReadTurnRejectsMismatchedHookClusterEvidence(t *testing.T) {
+	baseEvents := readJournalFixture(t, filepath.Join("testdata", "journal_turn_usage_multi_tools.jsonl"))
+	validUsage := func() map[string]any {
+		return map[string]any{
+			"inputTokens": 38315, "outputTokens": 155, "modelCalls": 2, "apiDurationMs": 29385,
+			"modelUsage": map[string]any{"grok-4.6": map[string]any{"modelCalls": 2}},
+		}
+	}
+	tests := []struct {
+		name   string
+		usage  map[string]any
+		events func([]JournalEvent) []JournalEvent
+	}{
+		{
+			name: "model usage call count",
+			usage: map[string]any{
+				"inputTokens": 38315, "outputTokens": 155, "modelCalls": 2, "apiDurationMs": 29385,
+				"modelUsage": map[string]any{"grok-4.6": map[string]any{"modelCalls": 3}},
+			},
+		},
+		{
+			name: "tool cluster count",
+			usage: map[string]any{
+				"inputTokens": 38315, "outputTokens": 155, "modelCalls": 3, "apiDurationMs": 29385,
+				"modelUsage": map[string]any{"grok-4.6": map[string]any{"modelCalls": 3}},
+			},
+		},
+		{
+			name: "aggregate duration exceeds causal gaps",
+			usage: map[string]any{
+				"inputTokens": 38315, "outputTokens": 155, "modelCalls": 2, "apiDurationMs": 30129,
+				"modelUsage": map[string]any{"grok-4.6": map[string]any{"modelCalls": 2}},
+			},
+		},
+		{
+			name:  "incomplete tool interval",
+			usage: validUsage(),
+			events: func(events []JournalEvent) []JournalEvent {
+				filtered := make([]JournalEvent, 0, len(events))
+				for _, event := range events {
+					if event.Event == "PostToolUse" && eventToolID(event.Payload) == "synthetic-search-3" {
+						continue
+					}
+					filtered = append(filtered, event)
+				}
+				return filtered
+			},
+		},
+		{
+			name: "incomplete aggregate usage",
+			usage: map[string]any{
+				"inputTokens": 38315, "outputTokens": 155, "modelCalls": 2, "apiDurationMs": 29385, "usageIsIncomplete": true,
+				"modelUsage": map[string]any{"grok-4.6": map[string]any{"modelCalls": 2}},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "updates.jsonl")
+			writeUpdates(t, path, []map[string]any{xaiUpdate(1787801283, "synthetic-events-session", map[string]any{
+				"sessionUpdate": "turn_completed", "prompt_id": "synthetic-events-prompt", "stop_reason": "end_turn", "agent_result": "Synthetic answer.", "usage": test.usage,
+			})})
+			events := append([]JournalEvent(nil), baseEvents...)
+			if test.events != nil {
+				events = test.events(events)
+			}
+			turn, ok, err := ReadTurn(Options{
+				TranscriptPath: path, SessionID: "synthetic-events-session", TurnID: "synthetic-events-prompt",
+				CaptureContent: "preview", MaxChars: 1_000, Events: events,
+			})
+			if err != nil || !ok {
+				t.Fatalf("ReadTurn() ok=%t err=%v", ok, err)
+			}
+			if len(turn.LLMCalls) != 0 {
+				t.Fatalf("mismatched evidence fabricated LLM calls: %#v", turn.LLMCalls)
+			}
+		})
+	}
+}
+
+func TestReadTurnRejectsSessionEventsWhenAggregateCallCountDiffers(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "updates.jsonl")
+	writeUpdates(t, path, []map[string]any{xaiUpdate(1787801283, "synthetic-events-session", map[string]any{
+		"sessionUpdate": "turn_completed", "prompt_id": "synthetic-events-prompt", "stop_reason": "end_turn", "agent_result": "Synthetic answer.",
+		"usage": map[string]any{
+			"inputTokens": 38315, "outputTokens": 155, "modelCalls": 3, "apiDurationMs": 29385,
+			"modelUsage": map[string]any{"grok-4.6": map[string]any{"modelCalls": 3}},
+		},
+	})})
+	events, err := os.ReadFile(filepath.Join("testdata", "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, "events.jsonl"), events, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	turn, ok, err := ReadTurn(Options{
+		TranscriptPath: path, SessionID: "synthetic-events-session", TurnID: "synthetic-events-prompt",
+		CaptureContent: "preview", MaxChars: 1_000,
+		Events: readJournalFixture(t, filepath.Join("testdata", "journal_turn_usage_multi_tools.jsonl")),
+	})
+	if err != nil || !ok {
+		t.Fatalf("ReadTurn() ok=%t err=%v", ok, err)
+	}
+	if len(turn.LLMCalls) != 0 {
+		t.Fatalf("event/aggregate count mismatch fabricated LLM calls: %#v", turn.LLMCalls)
 	}
 }
 
@@ -502,4 +819,35 @@ func writeUpdates(t *testing.T, path string, records []map[string]any) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func readJournalFixture(t *testing.T, path string) []JournalEvent {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	events := make([]JournalEvent, 0)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var event JournalEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
+func mustRFC3339Nano(t *testing.T, value string) int64 {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed.UnixNano()
 }

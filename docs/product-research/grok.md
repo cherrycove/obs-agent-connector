@@ -32,10 +32,11 @@ The connector never returns a blocking decision. Each Hook process performs only
 | --- | --- | --- | --- | --- |
 | Hook | stdin | camelCase JSON | One connector process per event | Prompt, tool arguments/results, errors, final response |
 | Session update stream | Hook `transcriptPath`; normally `~/.grok/sessions/<encoded-cwd>/<session-id>/updates.jsonl` | JSONL envelopes with Unix-second timestamp, method, and params | Append-only authoritative conversation/session stream | User, assistant, tool, model, and usage data |
+| Session event stream | `events.jsonl` next to the Hook `transcriptPath` | `xai-grok-session-events` JSONL, schema version `1.0`, with RFC 3339 timestamps | Append-only turn, loop, phase, first-token, tool, and terminal events | Session ID, model, timing, tool names, and outcomes |
 | Connector journal | `~/.obs-agent-connector/grok/state/journal/` | Sanitized bounded JSON | Appended by Hooks and scoped to one turn | Capture-mode-limited Hook evidence |
 | Connector queue/upload state | `~/.obs-agent-connector/grok/state/` | JSON | Persisted before detached processing and upload | Normalized terminal Turn and per-signal delivery markers |
 
-The connector reads xAI `_x.ai/session/update` envelopes from `updates.jsonl`. The current extension surface includes durable `TurnCompleted` records and Messages-backend `ResponseStarted` / `ResponseCompleted` records. Unknown records and an incomplete final JSONL line are ignored rather than making the Hook fail.
+The connector reads xAI `_x.ai/session/update` envelopes from `updates.jsonl`. The current extension surface includes durable `TurnCompleted` records and Messages-backend `ResponseStarted` / `ResponseCompleted` records. It also derives the sibling `events.jsonl` path and reads complete [`xai-grok-session-events` schema `1.0` turn blocks](https://github.com/xai-org/grok-build/blob/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4/crates/codegen/xai-grok-session-events/src/types.rs). Unknown records and an incomplete final JSONL line are ignored rather than making the Hook fail.
 
 ## 4. Identifiers and Correlation
 
@@ -43,7 +44,7 @@ The connector reads xAI `_x.ai/session/update` envelopes from `updates.jsonl`. T
 | --- | --- | --- | --- |
 | Session ID | Hook `sessionId` | Stable for a Grok session | No upload without a session ID |
 | Turn ID | Hook/transcript `promptId` / `prompt_id` | Opaque turn key, scoped to the session | Recovery scans terminal records by session; no clock-derived identity |
-| LLM call ID | `ResponseStarted.message_id`, completed by matching `ResponseCompleted.message_id` | Stable on the Messages backend | No fabricated per-call identity when the pair is unavailable |
+| LLM call ID | `ResponseStarted.message_id`, completed by matching `ResponseCompleted.message_id` | Stable on the Messages backend | Turn-local derived ID for validated `events.jsonl` loops or explicitly synthetic Hook-boundary estimates |
 | Tool call ID | `toolUseId` | Stable across pre/post tool Hooks | Derived turn-local ID only when correlation evidence is otherwise unambiguous |
 | Subagent ID | `subagentId` | Stable across start/stop Hooks | No timing-only relationship |
 
@@ -78,14 +79,25 @@ worker           -> exact transcript + matching TurnCompleted
 | Cache read/create token | `ResponseStarted.cache_read_input_tokens` / `cache_creation_input_tokens` | Call | Messages backend only |
 | Output/final usage | `ResponseCompleted.usage` | Call | Requires a stable response pair |
 | Finish reason | `ResponseCompleted.stop_reason` | Call | Verbatim when present |
+| Model request boundary | schema `1.0` `phase_changed(waiting_for_model)` through `phase_changed(tool_execution)`, the next `loop_started`, or `turn_ended` | Call | Used only from one complete turn block that uniquely matches the Hook session and bounded Hook-delivery skew; the root expands to the official turn boundary |
+| TTFT | schema `1.0` `first_token` following the active `waiting_for_model` phase | Call | Omitted when a call produces no text/reasoning token before a tool request |
+| Model | schema `1.0` `turn_started.model_id` | Turn and validated calls | Used as the request model for every event-derived call in that turn |
 | Turn outcome | `TurnCompleted.stop_reason`, `agent_result`, and optional aggregate usage | Turn | Authoritative terminal evidence; aggregate usage is written to the root span and is not duplicated across calls |
 
-`ResponseStarted` and `ResponseCompleted` are documented in the pinned source as Messages-backend-only. Grok 1.0.5 can instead expose camelCase aggregate usage on `TurnCompleted`. The connector always keeps that reliable aggregate on the root span. It creates one `llm` span from the aggregate only when `modelCalls=1`, exactly one `modelUsage` entry confirms that call, usage is complete, and `apiDurationMs` provides the model-call boundary. Otherwise it omits unproven per-call token data and never distributes aggregate turn tokens across multiple LLM calls.
+`ResponseStarted` and `ResponseCompleted` are documented in the pinned source as Messages-backend-only. The connector uses the following strict precedence:
+
+1. Exact `ResponseStarted` / `ResponseCompleted` pairs provide the preferred per-call model, boundary, finish reason, and token usage.
+2. Without exact response pairs, exactly one complete schema `1.0` event turn must match the Hook session and both Hook endpoints within a two-second delivery-skew bound. The root expands to the official event turn boundaries. Its `waiting_for_model` phases provide real call boundaries and `first_token` provides TTFT. The `TurnCompleted.usage.modelCalls` count must equal the number of event-derived calls. Aggregate tokens remain only on the root because the event stream has no per-call token split.
+3. Without usable event evidence, one `llm` span can still come from complete aggregate usage when `modelCalls=1`, exactly one `modelUsage` entry confirms that call, and `apiDurationMs` provides its duration.
+4. For multiple calls, the last fallback requires complete aggregate usage, one model entry whose count matches `modelCalls`, positive `apiDurationMs`, and exactly `modelCalls-1` non-overlapping clusters formed from complete tool intervals. It places one estimated LLM call in every causal gap, fits the aggregate API duration without crossing a tool cluster, associates every clustered tool with the preceding estimated call, and marks the spans with `timing.source=grok_hook_boundaries`, `gtrace.synthetic=true`, and `gtrace.timing.estimated=true`. Any count, interval, model, or duration mismatch disables this fallback.
+
+The connector never distributes aggregate turn tokens across event-derived or synthetic calls. This prevents unproven per-call token attributes and token metrics while preserving the reliable aggregate on `invoke_agent`.
 
 ## 7. Tool, Skill, and Subagent Data
 
 - Tool input, result, and error use the Hook payload after recursive redaction and capture-mode truncation.
 - `durationMs`, when present, is preferred. Otherwise the adapter uses observed pre/post Hook boundaries and marks no stronger timing guarantee.
+- A tool is linked to an exact response LLM only when its complete Hook interval follows a `tool_use` response and ends no later than the next response start. An event-derived link likewise requires the complete interval to fall after that call and before the next call. The synthetic Hook-cluster fallback links every tool in a validated execution cluster to the estimated LLM immediately before it.
 - A `skill:*` span requires high-confidence evidence such as a tool input path ending in `SKILL.md`; an arbitrary mention of a skill name is not enough.
 - `SubagentStart` and `SubagentStop` correlate by `subagentId` and type. A child trace is emitted only when a stable child session/transcript exists; time proximity alone never creates a parent link.
 
@@ -93,7 +105,7 @@ worker           -> exact transcript + matching TurnCompleted
 
 | Platform | Product home | Hook file | Session store | Reload |
 | --- | --- | --- | --- | --- |
-| macOS | `~/.grok` | `~/.grok/hooks/obs-agent-connector.json` | `~/.grok/sessions/` | Restart or `/hooks` → Hooks tab → `l`; live E2E pending |
+| macOS | `~/.grok` | `~/.grok/hooks/obs-agent-connector.json` | `~/.grok/sessions/` | Restart or `/hooks` → Hooks tab → `l`; headless 1.0.5 E2E verified on 2026-08-27 |
 | Linux | `~/.grok` | Same | Same | Same; live E2E pending |
 | Windows | User home `.grok` | Same logical path | Same logical path | Same; live E2E pending |
 
@@ -106,8 +118,8 @@ worker           -> exact transcript + matching TurnCompleted
 
 ## 9. Architecture Decision
 
-- Pattern: hybrid Hook journal plus terminal `updates.jsonl` replay.
-- Reason: Hooks supply exact lifecycle and tool boundaries, while `TurnCompleted` prevents blocked/repeated Stop events from exporting partial turns and Response records provide the only stable per-call usage evidence.
+- Pattern: hybrid Hook journal plus terminal `updates.jsonl` and sibling `events.jsonl` replay.
+- Reason: Hooks supply exact lifecycle and tool boundaries, `TurnCompleted` prevents blocked/repeated Stop events from exporting partial turns, Response records provide exact per-call usage when available, and the schema-versioned event stream provides model/phase/TTFT boundaries on backends that omit Response records.
 - Deduplication: `(session_id, prompt_id)` plus the normalized Turn fingerprint.
 - Partial recovery: trace and metrics delivery markers are independent, so a successful signal is not resent when only the other signal failed.
 - Privacy: `enabled=false` exits before stdin is read. Hook input is capped at 128 KiB, content follows `none|preview|full` and `maxChars`, and secret-like keys are recursively redacted before persistence.
@@ -119,6 +131,8 @@ worker           -> exact transcript + matching TurnCompleted
 | --- | --- | --- | --- |
 | `UserPromptSubmit.prompt` | `Turn.InputMessages` | `invoke_agent` input | Redacted and bounded by capture mode |
 | Response start/completion pair | `LLMCall` | `llm` | Per-call model and tokens only with stable evidence |
+| schema `1.0` event turn | `LLMCall` | `llm` | Real phase boundary and optional TTFT; aggregate tokens stay on root |
+| validated aggregate usage plus tool clusters | `LLMCall` | `llm` | Explicitly synthetic estimated timing; no per-call tokens |
 | `PreToolUse` plus terminal tool event | `ToolCall` | `tool:<name>` | Tool ID correlation; explicit failure/denial preserved |
 | matching `SKILL.md` tool evidence | Skill call | `skill:<name>` under its tool | No name-only inference |
 | `SubagentStart` / `SubagentStop` | Subagent call | subagent tool lifecycle | Stable ID required |
@@ -131,7 +145,7 @@ worker           -> exact transcript + matching TurnCompleted
 All committed connector fixtures must be synthetic and contain no real prompt, user path, endpoint, or credential.
 
 - Hook install/update/remove preservation and reload guidance.
-- Normal and multi-response terminal turns.
+- Normal and multi-response terminal turns, schema `1.0` event-derived calls, and conservative Hook-cluster fallback/rejection cases.
 - Tool success, failure, and permission denial.
 - Blocked/repeated Stop and session-end Stop exclusion.
 - Failure, cancellation, cancel-and-send recovery, and out-of-order end reports.
@@ -139,7 +153,7 @@ All committed connector fixtures must be synthetic and contain no real prompt, u
 - Conservative Skill and subagent positive/negative cases.
 - Duplicate/concurrent Hook delivery and trace/metrics partial retry.
 - Build, unit tests, static checks, and six release package targets.
-- Real Grok TUI/headless collector validation on macOS, Linux, and Windows remains a release follow-up until recorded separately.
+- Real Grok 1.0.5 headless collector validation is recorded on macOS; TUI mode plus Linux and Windows remain release follow-ups.
 
 ## 12. Native External OpenTelemetry Coexistence
 
@@ -152,7 +166,8 @@ The connector does not enable, disable, or rewrite that native configuration. Bo
 | Question | Impact | Current fallback | Follow-up |
 | --- | --- | --- | --- |
 | Hook or transcript schema changes after the pinned commit | New records may be skipped | Ignore unknown fields and fail open; require terminal evidence | Revalidate on Grok upgrades |
-| Response records absent on a non-Messages backend | Per-call model and tokens unavailable | Omit unsupported LLM attributes/metrics | Adopt a future public per-call record |
+| Response records absent on a non-Messages backend | Per-call token usage remains unavailable | Use unambiguous schema `1.0` event timing when available; otherwise use the marked Hook-cluster estimate only when every evidence gate passes | Adopt a future public per-call usage record |
+| Event schema changes or multiple event turns match one Hook window | Event-derived call boundaries become ambiguous | Accept only schema `1.0` and exactly one session turn whose endpoints satisfy the bounded Hook-delivery skew; fall back conservatively or omit calls | Revalidate before accepting a new schema |
 | Stop arrives before transcript durability | Turn may initially be incomplete | Keep queued work and retry on later Hooks | Validate polling bounds with live sessions |
 | Replaced turn emits no cancellation Hook | Observe Hook alone can miss it | Scan `TurnCompleted` on prompt, idle, and session recovery events | Exercise live cancel-and-send behavior |
 | Cross-platform product differences | Paths, process detachment, or Hook shell behavior may vary | Connector packages all three platforms without claiming live validation | Record real TUI/headless E2E on each platform |
