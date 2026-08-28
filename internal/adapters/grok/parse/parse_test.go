@@ -57,6 +57,289 @@ func TestSyntheticFixturesRemainSanitizedAndUsable(t *testing.T) {
 	}
 }
 
+func TestClassifyPromptIDMatchesUpstreamPromptOrigins(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("testdata", "prompt_origins.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixtures []struct {
+		PromptID    string `json:"promptId"`
+		Origin      string `json:"origin"`
+		RequestType string `json:"requestType"`
+		Suppressed  bool   `json:"suppressed"`
+	}
+	if err := json.Unmarshal(body, &fixtures); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.Origin, func(t *testing.T) {
+			got := ClassifyPromptID(fixture.PromptID)
+			if got.Name != fixture.Origin || got.RequestType != fixture.RequestType || got.Suppressed != fixture.Suppressed {
+				t.Fatalf("ClassifyPromptID(%q) = %#v", fixture.PromptID, got)
+			}
+		})
+	}
+	for _, promptID := range []string{"task-completed", "Task-completed-task-1", "prefix-task-completed-task-1"} {
+		if got := ClassifyPromptID(promptID); got.Name != "user" || got.Suppressed {
+			t.Fatalf("non-prefix or case-mismatched ID %q was classified as synthetic: %#v", promptID, got)
+		}
+	}
+}
+
+func TestReadTurnSuppressesHiddenPromptOrigins(t *testing.T) {
+	for _, promptID := range []string{
+		"task-completed-task-1",
+		"subagent-completed-agent-1",
+		"workflow-completed-workflow-1",
+		"notifications-notification-1",
+		"goal-summary-goal-1",
+		"goal-classifier-nudge-goal-1",
+	} {
+		t.Run(promptID, func(t *testing.T) {
+			_, ok, err := ReadTurn(Options{
+				SessionID: "session-origin", TurnID: promptID, CaptureContent: "preview", MaxChars: 100,
+				Events: []JournalEvent{
+					{Event: "UserPromptSubmit", RecordedNano: 100, Payload: map[string]any{"prompt": "runtime wake"}},
+					{Event: "StopCancelled", RecordedNano: 200, Payload: map[string]any{"reason": "unknown"}},
+				},
+			})
+			if err != nil || ok {
+				t.Fatalf("hidden origin produced a turn: ok=%t err=%v", ok, err)
+			}
+		})
+	}
+}
+
+func TestReadTurnSuppressesStructuredHiddenFutureOrigin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "updates.jsonl")
+	writeUpdates(t, path, []map[string]any{
+		{
+			"timestamp": 100,
+			"method":    "session/update",
+			"params": map[string]any{
+				"sessionId": "session-hidden-meta",
+				"update": map[string]any{
+					"sessionUpdate": "user_message_chunk",
+					"content": map[string]any{
+						"type": "text", "text": "future runtime wake",
+						"_meta": map[string]any{"promptIndex": 1, "hideFromScrollback": true},
+					},
+				},
+			},
+		},
+		xaiUpdate(101, "session-hidden-meta", map[string]any{
+			"sessionUpdate": "turn_completed", "prompt_id": "future-runtime-origin-1",
+			"stop_reason": "end_turn", "agent_result": "internal result",
+		}),
+	})
+
+	hidden, ready, err := TurnHiddenFromScrollback(path, "session-hidden-meta", "future-runtime-origin-1")
+	if err != nil || !ready || !hidden {
+		t.Fatalf("structured visibility = hidden:%t ready:%t err:%v", hidden, ready, err)
+	}
+	_, ok, err := ReadTurn(Options{
+		TranscriptPath: path, SessionID: "session-hidden-meta", TurnID: "future-runtime-origin-1",
+		CaptureContent: "preview", MaxChars: 200,
+		Events: []JournalEvent{
+			{Event: "UserPromptSubmit", RecordedNano: 100, Payload: map[string]any{"prompt": "future runtime wake"}},
+			{Event: "Stop", RecordedNano: 200, Payload: map[string]any{"reason": "end_turn"}},
+		},
+	})
+	if err != nil || ok {
+		t.Fatalf("structured hidden origin produced a turn: ok=%t err=%v", ok, err)
+	}
+}
+
+func TestStructuredVisibilitySupportsObservedUpdateLevelMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "updates.jsonl")
+	writeUpdates(t, path, []map[string]any{
+		{
+			"timestamp": 100,
+			"method":    "session/update",
+			"params": map[string]any{
+				"sessionId": "session-update-meta",
+				"update": map[string]any{
+					"sessionUpdate": "user_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "runtime wake"},
+					"_meta":         map[string]any{"promptIndex": 1, "hideFromScrollback": true},
+				},
+			},
+		},
+		xaiUpdate(101, "session-update-meta", map[string]any{
+			"sessionUpdate": "turn_completed", "prompt_id": "future-update-meta-origin",
+			"stop_reason": "end_turn", "agent_result": "internal result",
+		}),
+	})
+
+	hidden, ready, err := TurnHiddenFromScrollback(path, "session-update-meta", "future-update-meta-origin")
+	if err != nil || !ready || !hidden {
+		t.Fatalf("observed update-level visibility = hidden:%t ready:%t err:%v", hidden, ready, err)
+	}
+}
+
+func TestStructuredVisibilityKeepsInterjectFallbackAndDistinguishesNotReady(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "updates.jsonl")
+	writeUpdates(t, path, []map[string]any{
+		{
+			"timestamp": 100,
+			"method":    "session/update",
+			"params": map[string]any{
+				"sessionId": "session-interject",
+				"update": map[string]any{
+					"sessionUpdate": "user_message_chunk",
+					"content": map[string]any{
+						"type": "text", "text": "visible interjection", "_meta": map[string]any{"promptIndex": 1},
+					},
+				},
+			},
+		},
+		xaiUpdate(101, "session-interject", map[string]any{
+			"sessionUpdate": "turn_completed", "prompt_id": "interject-fallback-user-1",
+			"stop_reason": "end_turn", "agent_result": "visible result",
+		}),
+	})
+
+	hidden, ready, err := TurnHiddenFromScrollback(path, "session-interject", "missing-turn")
+	if err != nil || ready || hidden {
+		t.Fatalf("unfinished visibility = hidden:%t ready:%t err:%v", hidden, ready, err)
+	}
+	hidden, ready, err = TurnHiddenFromScrollback(path, "session-interject", "interject-fallback-user-1")
+	if err != nil || !ready || hidden {
+		t.Fatalf("visible interjection = hidden:%t ready:%t err:%v", hidden, ready, err)
+	}
+	turn, ok, err := ReadTurn(Options{
+		TranscriptPath: path, SessionID: "session-interject", TurnID: "interject-fallback-user-1",
+		CaptureContent: "preview", MaxChars: 200,
+		Events: []JournalEvent{
+			{Event: "UserPromptSubmit", RecordedNano: 100, Payload: map[string]any{"prompt": "visible interjection"}},
+			{Event: "Stop", RecordedNano: 200, Payload: map[string]any{"reason": "end_turn"}},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("visible interjection was dropped: ok=%t err=%v", ok, err)
+	}
+	if turn.ExtraAttributes["request_type"] != "user_request" || turn.ExtraAttributes["grok.prompt_origin"] != "user" {
+		t.Fatalf("interject-fallback was not preserved as user: %#v", turn.ExtraAttributes)
+	}
+}
+
+func TestStructuredVisibilityIgnoresHiddenInTurnMessage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "updates.jsonl")
+	writeUpdates(t, path, []map[string]any{
+		{
+			"timestamp": 100,
+			"method":    "session/update",
+			"params": map[string]any{
+				"sessionId": "session-in-turn",
+				"update": map[string]any{
+					"sessionUpdate": "user_message_chunk",
+					"content": map[string]any{
+						"type": "text", "text": "visible user prompt", "_meta": map[string]any{"promptIndex": 1},
+					},
+				},
+			},
+		},
+		xaiUpdate(101, "session-in-turn", map[string]any{
+			"sessionUpdate": "response_started", "message_id": "message-1", "model": "grok-code",
+		}),
+		{
+			"timestamp": 102,
+			"method":    "session/update",
+			"params": map[string]any{
+				"sessionId": "session-in-turn",
+				"update": map[string]any{
+					"sessionUpdate": "user_message_chunk",
+					"content": map[string]any{
+						"type": "text", "text": "runtime reminder",
+						"_meta": map[string]any{"promptIndex": 2, "hideFromScrollback": true},
+					},
+				},
+			},
+		},
+		xaiUpdate(103, "session-in-turn", map[string]any{
+			"sessionUpdate": "response_completed", "message_id": "message-1",
+			"stop_reason": "end_turn", "usage": map[string]any{"input_tokens": 5, "output_tokens": 2},
+		}),
+		xaiUpdate(104, "session-in-turn", map[string]any{
+			"sessionUpdate": "turn_completed", "prompt_id": "ordinary-user-turn",
+			"stop_reason": "end_turn", "agent_result": "visible result",
+		}),
+	})
+
+	completed, err := CompletedTurns(path, "session-in-turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(completed) != 1 || completed[0].TurnID != "ordinary-user-turn" || completed[0].HiddenFromScrollback {
+		t.Fatalf("mid-turn hidden message reclassified the root: %#v", completed)
+	}
+	hidden, ready, err := TurnHiddenFromScrollback(path, "session-in-turn", "ordinary-user-turn")
+	if err != nil || !ready || hidden {
+		t.Fatalf("root visibility = hidden:%t ready:%t err:%v", hidden, ready, err)
+	}
+}
+
+func TestReadTurnDoesNotSuppressSystemReminderTextWithoutOriginPrefix(t *testing.T) {
+	turn, ok, err := ReadTurn(Options{
+		SessionID: "session-origin", TurnID: "ordinary-user-turn", CaptureContent: "preview", MaxChars: 200,
+		Events: []JournalEvent{
+			{Event: "UserPromptSubmit", RecordedNano: 100, Payload: map[string]any{"prompt": "<system-reminder>literal user text</system-reminder>"}},
+			{Event: "StopCancelled", RecordedNano: 200, Payload: map[string]any{"reason": "unknown"}},
+		},
+	})
+	if err != nil || !ok {
+		t.Fatalf("text-only heuristic suppressed a user turn: ok=%t err=%v", ok, err)
+	}
+	if turn.ExtraAttributes["request_type"] != "user_request" || turn.ExtraAttributes["grok.prompt_origin"] != "user" {
+		t.Fatalf("ordinary prompt ID was not kept as a user request: %#v", turn.ExtraAttributes)
+	}
+}
+
+func TestReadTurnClassifiesObservableSyntheticOrigins(t *testing.T) {
+	for _, test := range []struct {
+		promptID    string
+		requestType string
+		origin      string
+	}{
+		{promptID: "scheduler-fired-schedule-1", requestType: "scheduled_task", origin: "scheduler_fired"},
+		{promptID: "plan-resume-plan-1", requestType: "plan_resume", origin: "plan_resume"},
+	} {
+		t.Run(test.origin, func(t *testing.T) {
+			promptPayload := map[string]any{"prompt": "observable runtime turn"}
+			turn, ok, err := ReadTurn(Options{
+				SessionID: "session-origin", TurnID: test.promptID, CaptureContent: "preview", MaxChars: 100,
+				Events: []JournalEvent{
+					{Event: "UserPromptSubmit", RecordedNano: 100, Payload: promptPayload},
+					{Event: "StopCancelled", RecordedNano: 200, Payload: map[string]any{"reason": "unknown"}},
+				},
+			})
+			if err != nil || !ok {
+				t.Fatalf("observable origin was dropped: ok=%t err=%v", ok, err)
+			}
+			if turn.ExtraAttributes["request_type"] != test.requestType || turn.ExtraAttributes["grok.prompt_origin"] != test.origin {
+				t.Fatalf("unexpected prompt-origin attributes: %#v", turn.ExtraAttributes)
+			}
+		})
+	}
+}
+
+func TestParentMessageClassifierDoesNotInventMissingLifecycle(t *testing.T) {
+	origin := ClassifyPromptID("parent-message-message-1")
+	if origin.Name != "parent_agent_message" || origin.RequestType != "subagent" || origin.Suppressed {
+		t.Fatalf("unexpected parent-message classification: %#v", origin)
+	}
+	_, ok, err := ReadTurn(Options{
+		SessionID: "session-parent", TurnID: "parent-message-message-1",
+		CaptureContent: "preview", MaxChars: 100,
+		Events: []JournalEvent{
+			{Event: "SubagentStop", RecordedNano: 200, Payload: map[string]any{"subagentId": "child-1"}},
+		},
+	})
+	if err != nil || ok {
+		t.Fatalf("missing UserPromptSubmit invented a parent-message turn: ok=%t err=%v", ok, err)
+	}
+}
+
 func TestReadTurnRequiresDurableTerminalAndBuildsPairedResponses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "updates.jsonl")
 	writeUpdates(t, path, []map[string]any{

@@ -36,6 +36,14 @@ type Options struct {
 	Events             []JournalEvent
 }
 
+// CompletedTurn is one durable transcript turn and its structured visibility.
+// It lets recovery inspect a session transcript once instead of rereading it
+// for every completed prompt.
+type CompletedTurn struct {
+	TurnID               string
+	HiddenFromScrollback bool
+}
+
 type transcriptRecord struct {
 	Timestamp uint64 `json:"timestamp"`
 	Method    string `json:"method"`
@@ -107,6 +115,9 @@ func ReadTurn(options Options) (model.Turn, bool, error) {
 	if strings.TrimSpace(options.TurnID) == "" {
 		return model.Turn{}, false, errors.New("Grok promptId is empty")
 	}
+	if ClassifyPromptID(options.TurnID).Suppressed {
+		return model.Turn{}, false, nil
+	}
 	if !hasEvent(options.Events, "UserPromptSubmit") {
 		return model.Turn{}, false, nil
 	}
@@ -122,6 +133,9 @@ func ReadTurn(options Options) (model.Turn, bool, error) {
 	}
 	terminalIndex, terminalRecord := findTurnCompleted(records, options.TurnID)
 	if terminalRecord == nil && !hookTerminal.Explicit {
+		return model.Turn{}, false, nil
+	}
+	if terminalRecord != nil && initialTurnUserEvidence(records, terminalIndex).HiddenFromScrollback {
 		return model.Turn{}, false, nil
 	}
 
@@ -153,24 +167,75 @@ func ReadTurn(options Options) (model.Turn, bool, error) {
 	return turn, true, nil
 }
 
+// TurnHiddenFromScrollback returns Grok's structured visibility decision for
+// one durable transcript turn. ready is false until the matching
+// TurnCompleted record exists, so callers do not confuse an unfinished turn
+// with a visible one.
+func TurnHiddenFromScrollback(path, sessionID, turnID string) (hidden, ready bool, err error) {
+	records, err := readTranscript(path, sessionID)
+	if err != nil {
+		return false, false, err
+	}
+	terminalIndex, terminal := findTurnCompleted(records, turnID)
+	if terminal == nil {
+		return false, false, nil
+	}
+	return initialTurnUserEvidence(records, terminalIndex).HiddenFromScrollback, true, nil
+}
+
 // CompletedTurnIDs returns durable prompt IDs from valid TurnCompleted records.
 // Invalid and incomplete JSONL lines are ignored so one bad tail cannot hide
 // earlier completed turns.
 func CompletedTurnIDs(path, sessionID string) ([]string, error) {
+	turns, err := CompletedTurns(path, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		out = append(out, turn.TurnID)
+	}
+	return out, nil
+}
+
+// CompletedTurns returns every distinct durable prompt and its structured
+// scrollback visibility in one transcript pass.
+func CompletedTurns(path, sessionID string) ([]CompletedTurn, error) {
 	records, err := readTranscript(path, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	seen := map[string]bool{}
-	out := make([]string, 0)
+	out := make([]CompletedTurn, 0)
+	evidence := turnUserEvidence{}
+	foundInitialUser := false
+	initialUserRunClosed := false
 	for _, record := range records {
-		if updateType(record) != "turn_completed" {
-			continue
-		}
-		turnID := stringValue(record.Params.Update, "prompt_id", "promptId")
-		if turnID != "" && !seen[turnID] {
-			seen[turnID] = true
-			out = append(out, turnID)
+		switch updateType(record) {
+		case "turn_completed":
+			turnID := stringValue(record.Params.Update, "prompt_id", "promptId")
+			if turnID != "" && !seen[turnID] {
+				seen[turnID] = true
+				out = append(out, CompletedTurn{
+					TurnID:               turnID,
+					HiddenFromScrollback: evidence.HiddenFromScrollback,
+				})
+			}
+			evidence = turnUserEvidence{}
+			foundInitialUser = false
+			initialUserRunClosed = false
+		case "user_message_chunk":
+			if initialUserRunClosed {
+				continue
+			}
+			foundInitialUser = true
+			if userMessageChunkHidden(record) {
+				evidence.HiddenFromScrollback = true
+			}
+		default:
+			if foundInitialUser {
+				initialUserRunClosed = true
+			}
 		}
 	}
 	return out, nil
@@ -194,7 +259,8 @@ func readTranscript(path, sessionID string) ([]transcriptRecord, error) {
 		}
 		record.Index = index
 		index++
-		if record.Method != "_x.ai/session/update" || len(record.Params.Update) == 0 {
+		if (!strings.EqualFold(record.Method, "_x.ai/session/update") &&
+			!strings.EqualFold(record.Method, "session/update")) || len(record.Params.Update) == 0 {
 			continue
 		}
 		if record.Params.SessionID != "" && sessionID != "" && record.Params.SessionID != sessionID {
@@ -212,6 +278,52 @@ func findTurnCompleted(records []transcriptRecord, turnID string) (int, *transcr
 		}
 	}
 	return -1, nil
+}
+
+type turnUserEvidence struct {
+	HiddenFromScrollback bool
+}
+
+// initialTurnUserEvidence inspects only the first persisted user-message run
+// in the target turn. Mid-turn synthetic messages must not reclassify the
+// enclosing prompt. Grok stamps hideFromScrollback from PromptOrigin, making
+// this a structured fallback for future hidden origins without parsing text.
+func initialTurnUserEvidence(records []transcriptRecord, terminalIndex int) turnUserEvidence {
+	if terminalIndex < 0 || terminalIndex > len(records) {
+		return turnUserEvidence{}
+	}
+	startIndex := 0
+	for index := terminalIndex - 1; index >= 0; index-- {
+		if updateType(records[index]) == "turn_completed" {
+			startIndex = index + 1
+			break
+		}
+	}
+	foundUserChunk := false
+	for index := startIndex; index < terminalIndex; index++ {
+		record := records[index]
+		if updateType(record) != "user_message_chunk" {
+			if foundUserChunk {
+				break
+			}
+			continue
+		}
+		if !foundUserChunk {
+			foundUserChunk = true
+		}
+		if userMessageChunkHidden(record) {
+			return turnUserEvidence{HiddenFromScrollback: true}
+		}
+	}
+	return turnUserEvidence{}
+}
+
+func userMessageChunkHidden(record transcriptRecord) bool {
+	updateMeta, _ := record.Params.Update["_meta"].(map[string]any)
+	content, _ := record.Params.Update["content"].(map[string]any)
+	contentMeta, _ := content["_meta"].(map[string]any)
+	return boolValue(firstNonNil(updateMeta["hideFromScrollback"], updateMeta["hide_from_scrollback"])) ||
+		boolValue(firstNonNil(contentMeta["hideFromScrollback"], contentMeta["hide_from_scrollback"]))
 }
 
 func collectResponses(records []transcriptRecord, terminalIndex int) []responseBoundary {
@@ -445,9 +557,11 @@ func normalize(
 	resource["agent_runtime"] = "grok"
 	resource["telemetry.sdk.language"] = "go"
 	resource["telemetry.sdk.name"] = "gtrace"
+	promptOrigin := ClassifyPromptID(options.TurnID)
 	extra := map[string]any{
-		"request_type":  "user_request",
-		"timing.source": "grok_hooks_and_updates",
+		"request_type":       promptOrigin.RequestType,
+		"grok.prompt_origin": promptOrigin.Name,
+		"timing.source":      "grok_hooks_and_updates",
 	}
 	if eventTurn != nil {
 		extra["timing.source"] = "grok_events_and_hooks"

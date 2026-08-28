@@ -4,6 +4,7 @@
 
 - Product: Grok Build CLI, exposed by the `grok` command.
 - Stable compatibility baseline: [`xai-org/grok-build` commit `9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4`](https://github.com/xai-org/grok-build/commit/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4), whose shell and pager crates report version 1.0.5 and whose Hook schema contains every event used by this adapter.
+- Prompt-origin baseline: Grok 1.0.5 defines the runtime-generated prompt prefixes and scrollback visibility policy in [`PromptOrigin`](https://github.com/xai-org/grok-build/blob/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4/crates/codegen/xai-grok-shell/src/session/mod.rs#L58-L195). The connector also recognizes the forward-compatible `parent-message-` origin added on [`9684fa3cdbf2995e30ea8b9b637f1db008f144fc`](https://github.com/xai-org/grok-build/blob/9684fa3cdbf2995e30ea8b9b637f1db008f144fc/crates/codegen/xai-grok-shell/src/session/mod.rs#L83-L227).
 - Release-channel evidence: the [official installer](https://x.ai/cli/install.sh) defaults to the `stable` channel and resolves its version from `https://x.ai/cli/stable`; that pointer returned 1.0.5 on the evidence date. The default source branch reported 1.0.10 at the same time, so source-package versions are not used as the stable release floor.
 - Minimum supported product version: Grok Build CLI 1.0.5.
 - Supported connector platforms: macOS, Linux, and Windows.
@@ -37,7 +38,7 @@ The connector never returns a blocking decision. Each Hook process performs only
 | Connector journal | `~/.obs-agent-connector/grok/state/journal/` | Sanitized bounded JSON | Appended by Hooks and scoped to one turn | Capture-mode-limited Hook evidence |
 | Connector queue/upload state | `~/.obs-agent-connector/grok/state/` | JSON | Persisted before detached processing and upload | Normalized terminal Turn and per-signal delivery markers |
 
-The connector reads xAI `_x.ai/session/update` envelopes from `updates.jsonl`. The current extension surface includes durable `TurnCompleted` records and Messages-backend `ResponseStarted` / `ResponseCompleted` records. It also derives the sibling `events.jsonl` path and reads complete [`xai-grok-session-events` schema `1.0` turn blocks](https://github.com/xai-org/grok-build/blob/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4/crates/codegen/xai-grok-session-events/src/types.rs). For captured content, a turn's `session/update` `promptIndex` selects the matching block in `chat_history.jsonl`; the number of assistant responses must exactly match the already-proven LLM call count before any call is enriched. Unknown records and an incomplete final JSONL line are ignored rather than making the Hook fail.
+The connector reads both xAI `_x.ai/session/update` envelopes and persisted `session/update` user-message chunks from `updates.jsonl`. The current extension surface includes durable `TurnCompleted` records and Messages-backend `ResponseStarted` / `ResponseCompleted` records. It also derives the sibling `events.jsonl` path and reads complete [`xai-grok-session-events` schema `1.0` turn blocks](https://github.com/xai-org/grok-build/blob/9fabadea800fa6e2ed8ec91c4f45f02b7e2504f4/crates/codegen/xai-grok-session-events/src/types.rs). For captured content, a turn's `session/update` `promptIndex` selects the matching block in `chat_history.jsonl`; the number of assistant responses must exactly match the already-proven LLM call count before any call is enriched. Unknown records and an incomplete final JSONL line are ignored rather than making the Hook fail.
 
 ## 4. Identifiers and Correlation
 
@@ -51,9 +52,34 @@ The connector reads xAI `_x.ai/session/update` envelopes from `updates.jsonl`. T
 
 Some current tool Hook call sites may omit `promptId`. The adapter therefore records the active prompt per session from `UserPromptSubmit` and uses it only as the turn-local fallback. Turn-end events may arrive after the next prompt, so explicit prompt IDs take precedence over receipt time.
 
+### Prompt-origin policy
+
+Grok uses case-sensitive prompt-ID prefixes as its primary prompt-origin signal. The connector mirrors those exact prefix rules; it does not inspect prompt text and does not merge turns based on time proximity. Once a matching `TurnCompleted` is durable, the connector also honors the initial persisted `user_message_chunk` `hideFromScrollback=true` metadata as a structured suppression fallback for a future hidden origin that an older connector does not recognize. Grok 1.0.5 sessions have been observed with the metadata at `update._meta`, while the ACP content-chunk shape places it at `update.content._meta`; the reader accepts both layouts. Recovery obtains prompt IDs and this visibility decision in one transcript scan.
+
+| Prompt ID | Grok origin | Connector behavior | `request_type` |
+| --- | --- | --- | --- |
+| No recognized prefix | Human user | Export | `user_request` |
+| `task-completed-` | Background terminal task completion | Suppress | `internal` |
+| `subagent-completed-` | Background subagent completion | Suppress | `internal` |
+| `workflow-completed-` | Workflow completion | Suppress | `internal` |
+| `notifications-` | Idle notification drain | Suppress | `internal` |
+| `goal-summary-` | Orchestrator goal summary | Suppress | `internal` |
+| `goal-classifier-nudge-` | Verification-stage runtime nudge | Suppress | `internal` |
+| `scheduler-fired-` | Scheduled `/loop` run | Export | `scheduled_task` |
+| `plan-resume-` | Resumed plan decision | Export | `plan_resume` |
+| `parent-message-` | Model-authored parent-agent message | Classify when observable; do not synthesize a missing Hook lifecycle | `subagent` |
+
+The suppressed set matches the origins that Grok hides from user scrollback in the 1.0.5 source. Scheduler and plan-resume turns remain observable because Grok renders their user-message echo. `interject-fallback-*` is deliberately an ordinary user prompt ID and remains a `user_request`.
+
+The persisted `chat_history.jsonl` also carries `UserItem.synthetic_reason`, but that field is not a blanket turn filter. Grok's own `SyntheticReason::starts_prompt_turn` keeps `system_reminder`, `auto_continue`, `auto_recovery`, `interjection`, and `stop_hook_feedback` inside the current turn. The connector therefore considers only the initial persisted user-message run when applying `hideFromScrollback`; a hidden mid-turn reminder cannot suppress its enclosing user turn.
+
+The current-main `parent-message-*` origin is visible and is classified as model-authored subagent traffic, never as a human request. However, current main deliberately skips `UserPromptSubmit` for `ModelAuthoredUntrusted` input. Because the connector requires that Hook as the stable start boundary, it does not currently queue or invent a standalone parent-message trace. An explicit Hook `subagentType` remains the stronger detail if a future product version exposes that lifecycle.
+
+Every `UserPromptSubmit`, including a suppressed runtime wake, replaces the connector's active prompt context. This prevents later tool Hooks without `promptId` from leaking into the preceding human turn. Suppressed turns are not journaled or queued; recovery and workers also delete pre-existing pending journal/queue files from connector versions that did not classify them.
+
 ## 5. Lifecycle and Terminality
 
-- Turn start: `UserPromptSubmit`, using `(sessionId, promptId)` as the primary key.
+- Turn start: `UserPromptSubmit`, using `(sessionId, promptId)` as the primary key and applying the prompt-origin policy before persistence.
 - Tool lifecycle: `PreToolUse` followed by `PostToolUse`, `PostToolUseFailure`, or `PermissionDenied`.
 - Normal completion signal: `Stop(reason=end_turn)`, subject to the durable transcript check below.
 - Failure: `StopFailure`, with one of `rate_limit`, `authentication_failed`, `invalid_request`, `server_error`, `max_output_tokens`, or `unknown`.
@@ -63,7 +89,8 @@ Some current tool Hook call sites may omit `promptId`. The adapter therefore rec
 `Stop` is a gate. It can be blocked and repeated, and `stopHookActive=true` does not distinguish the final continuation from an intermediate one. The connector therefore uploads a normal turn only after finding a matching durable `TurnCompleted` record in `updates.jsonl`. A session-end Stop with no prompt ID and reason `channel_closed` or `shutdown` is not treated as a turn.
 
 ```text
-Hook event       -> sanitize and append per-(session,prompt) journal
+Hook event       -> classify prompt origin and update active prompt context
+                 -> sanitize and append an observable per-(session,prompt) journal
 terminal/recovery -> enqueue local work and return immediately
 worker           -> exact transcript + matching TurnCompleted
                  -> normalized terminal Turn
@@ -125,6 +152,7 @@ The connector never distributes aggregate turn tokens across multiple event-deri
 - Pattern: hybrid Hook journal plus terminal `updates.jsonl` and sibling `events.jsonl` replay.
 - Reason: Hooks supply exact lifecycle and tool boundaries, `TurnCompleted` prevents blocked/repeated Stop events from exporting partial turns, Response records provide exact per-call usage when available, and the schema-versioned event stream provides model/phase/TTFT boundaries on backends that omit Response records.
 - Deduplication: `(session_id, prompt_id)` plus the normalized Turn fingerprint.
+- Internal-turn filtering: exact upstream prompt-ID prefixes suppress known non-user runtime wakes before journaling. For durable turns, the initial persisted `hideFromScrollback` flag is a structured forward-compatible fallback; recovery and workers clean matching stale pending state without uploading it.
 - Partial recovery: trace and metrics delivery markers are independent, so a successful signal is not resent when only the other signal failed.
 - Privacy: `enabled=false` exits before stdin is read. Hook input is capped at 128 KiB, content follows `none|preview|full` and `maxChars`, and secret-like keys are recursively redacted before persistence.
 - Resource defaults: `service.name=gtrace-grok`, `agent_runtime=grok`, `agent_name=Grok Build`, and the detected Grok version when available. The connector version is recorded on the instrumentation scope.
@@ -134,6 +162,7 @@ The connector never distributes aggregate turn tokens across multiple event-deri
 | Product field/event | Internal model | Span/attribute | Note |
 | --- | --- | --- | --- |
 | `UserPromptSubmit.prompt` | `Turn.InputMessages` | `invoke_agent` input | Redacted and bounded by capture mode |
+| `UserPromptSubmit.promptId` prefix and initial `user_message_chunk` `hideFromScrollback` metadata | Prompt origin | `request_type`, `grok.prompt_origin`, or suppression | Exact prefix first; accepts observed update-level and ACP content-level metadata; no content/timing heuristic |
 | Response start/completion pair | `LLMCall` | `llm` | Per-call model and tokens only with stable evidence |
 | prompt-indexed `chat_history.jsonl` block | `LLMCall` content | `llm` input/output | Exact assistant-count match required; never used as token evidence |
 | schema `1.0` event turn | `LLMCall` | `llm` | Real phase boundary and optional TTFT; aggregate tokens stay on root |
@@ -155,6 +184,8 @@ All committed connector fixtures must be synthetic and contain no real prompt, u
 - Blocked/repeated Stop and session-end Stop exclusion.
 - Failure, cancellation, cancel-and-send recovery, and out-of-order end reports.
 - Tool Hooks without `promptId` and an incomplete transcript tail.
+- Every upstream prompt-origin prefix, including hidden-origin suppression, observable scheduler/plan-resume turns, parent-agent classification without an invented Hook lifecycle, `interject-fallback-*` preservation, missing-prompt tool isolation, stale queue cleanup, and no-upload assertions.
+- Structured `hideFromScrollback` fallback, not-ready versus durable visibility, hidden mid-turn message isolation, one-pass recovery classification, and worker/recovery cleanup without upload.
 - Conservative Skill and subagent positive/negative cases.
 - Duplicate/concurrent Hook delivery and trace/metrics partial retry.
 - Build, unit tests, static checks, and six release package targets.
@@ -171,6 +202,8 @@ The connector does not enable, disable, or rewrite that native configuration. Bo
 | Question | Impact | Current fallback | Follow-up |
 | --- | --- | --- | --- |
 | Hook or transcript schema changes after the pinned commit | New records may be skipped | Ignore unknown fields and fail open; require terminal evidence | Revalidate on Grok upgrades |
+| Grok adds another runtime prompt-origin prefix | A new origin is unknown before terminal durability | Match documented prefixes immediately; at `TurnCompleted`, suppress only when the initial persisted user-message metadata explicitly says `hideFromScrollback=true` | Revalidate `PromptOrigin::from_prompt_id` and its visibility policy on Grok upgrades |
+| Current-main parent-agent messages omit `UserPromptSubmit` | The adapter cannot establish the standalone `(sessionId, promptId)` lifecycle | Classify `parent-message-*` when observable, but do not infer a trace from transcript timing or content | Revisit when Grok exposes a stable parent-message Hook lifecycle |
 | Response records absent on a non-Messages backend | Per-call token usage remains unavailable | Use unambiguous schema `1.0` event timing when available; otherwise use the marked Hook-cluster estimate only when every evidence gate passes | Adopt a future public per-call usage record |
 | Agent Monitoring summary reads token fields only from `llm` spans | Multi-call trace summary can show `-` even though the root contains the exact turn aggregate | Keep the aggregate on `invoke_agent`; do not assign it to an arbitrary call or duplicate it across calls | Make the view fall back to root aggregate usage for multi-call turns |
 | Event schema changes or multiple event turns match one Hook window | Event-derived call boundaries become ambiguous | Accept only schema `1.0` and exactly one session turn whose endpoints satisfy the bounded Hook-delivery skew; fall back conservatively or omit calls | Revalidate before accepting a new schema |

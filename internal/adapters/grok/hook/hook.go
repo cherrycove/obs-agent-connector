@@ -140,6 +140,25 @@ func RecordEvent(event string, payload map[string]any, cfg grokconfig.Config) er
 		appendLog(cfg, hooklog.HookInvoked, map[string]any{"event": event, "session_id_hash": shortHash(ctx.SessionID)})
 		return nil
 	}
+	promptOrigin := grokparse.ClassifyPromptID(ctx.TurnID)
+	if strings.EqualFold(event, "UserPromptSubmit") {
+		// Even a suppressed runtime wake becomes the active prompt. Grok tool
+		// Hooks can omit promptId, and retaining the previous human turn here
+		// would attach the runtime wake's tools to the wrong trace.
+		if err := writeJSONAtomic(activePath(cfg.StateDir, ctx.SessionID), ctx); err != nil {
+			return err
+		}
+	}
+	if promptOrigin.Suppressed {
+		if err := cleanupSuppressedTurn(cfg, ctx.SessionID, ctx.TurnID); err != nil {
+			return err
+		}
+		appendLog(cfg, hooklog.HookInvoked, map[string]any{
+			"event": event, "session_id_hash": shortHash(ctx.SessionID), "turn_id_hash": shortHash(ctx.TurnID),
+			"prompt_origin": promptOrigin.Name, "suppressed": true,
+		})
+		return nil
+	}
 	storedPayload := payloadForStorage(payload, cfg, event)
 	storedPayload["sessionId"] = ctx.SessionID
 	storedPayload["promptId"] = ctx.TurnID
@@ -160,11 +179,6 @@ func RecordEvent(event string, payload map[string]any, cfg grokconfig.Config) er
 	if err := appendJournal(journal, stored); err != nil {
 		return err
 	}
-	if strings.EqualFold(event, "UserPromptSubmit") {
-		if err := writeJSONAtomic(activePath(cfg.StateDir, ctx.SessionID), ctx); err != nil {
-			return err
-		}
-	}
 	appendLog(cfg, hooklog.HookInvoked, map[string]any{
 		"event": event, "session_id_hash": shortHash(ctx.SessionID), "turn_id_hash": shortHash(ctx.TurnID),
 	})
@@ -181,6 +195,29 @@ func enqueueForEvent(event string, payload map[string]any, cfg grokconfig.Config
 	if err != nil {
 		return err
 	}
+	promptOrigin := grokparse.ClassifyPromptID(ctx.TurnID)
+	switch strings.ToLower(event) {
+	case "userpromptsubmit":
+		recoveryErr := enqueueRecoveredTurns(ctx, cfg)
+		if promptOrigin.Suppressed {
+			cleanupErr := cleanupSuppressedTurn(cfg, ctx.SessionID, ctx.TurnID)
+			if recoveryErr != nil {
+				return recoveryErr
+			}
+			return cleanupErr
+		}
+		return recoveryErr
+	case "sessionend":
+		return enqueueRecoveredTurns(ctx, cfg)
+	case "notification":
+		if strings.EqualFold(stringValue(payload, "notificationType", "notification_type"), "idle_prompt") {
+			return enqueueRecoveredTurns(ctx, cfg)
+		}
+		return nil
+	}
+	if promptOrigin.Suppressed {
+		return cleanupSuppressedTurn(cfg, ctx.SessionID, ctx.TurnID)
+	}
 	switch strings.ToLower(event) {
 	case "stop":
 		if ctx.TurnID == "" || boolValue(firstNonNil(payload["stopHookActive"], payload["stop_hook_active"])) {
@@ -194,12 +231,6 @@ func enqueueForEvent(event string, payload map[string]any, cfg grokconfig.Config
 		}
 		_, err = enqueueTurn(ctx, cfg)
 		return err
-	case "userpromptsubmit", "sessionend":
-		return enqueueRecoveredTurns(ctx, cfg)
-	case "notification":
-		if strings.EqualFold(stringValue(payload, "notificationType", "notification_type"), "idle_prompt") {
-			return enqueueRecoveredTurns(ctx, cfg)
-		}
 	}
 	return nil
 }
@@ -208,7 +239,7 @@ func enqueueRecoveredTurns(ctx turnContext, cfg grokconfig.Config) error {
 	if ctx.SessionID == "" || ctx.TranscriptPath == "" {
 		return nil
 	}
-	turnIDs, err := grokparse.CompletedTurnIDs(ctx.TranscriptPath, ctx.SessionID)
+	turns, err := grokparse.CompletedTurns(ctx.TranscriptPath, ctx.SessionID)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -216,7 +247,20 @@ func enqueueRecoveredTurns(ctx turnContext, cfg grokconfig.Config) error {
 		return err
 	}
 	manager := state.Manager{Root: filepath.Join(cfg.StateDir, "uploads")}
-	for _, turnID := range turnIDs {
+	for _, turn := range turns {
+		turnID := turn.TurnID
+		if grokparse.ClassifyPromptID(turnID).Suppressed {
+			if err := cleanupSuppressedTurn(cfg, ctx.SessionID, turnID); err != nil {
+				return err
+			}
+			continue
+		}
+		if turn.HiddenFromScrollback {
+			if err := cleanupSuppressedTurn(cfg, ctx.SessionID, turnID); err != nil {
+				return err
+			}
+			continue
+		}
 		completed, completedErr := manager.Completed(ctx.SessionID, turnID)
 		if completedErr != nil {
 			return completedErr
@@ -243,6 +287,9 @@ func enqueueTurn(ctx turnContext, cfg grokconfig.Config) (string, error) {
 	if ctx.SessionID == "" || ctx.TurnID == "" {
 		return "", errors.New("Grok queue requires sessionId and promptId")
 	}
+	if grokparse.ClassifyPromptID(ctx.TurnID).Suppressed {
+		return "", cleanupSuppressedTurn(cfg, ctx.SessionID, ctx.TurnID)
+	}
 	events, err := readJournal(journalPath(cfg.StateDir, ctx.SessionID, ctx.TurnID))
 	if err != nil {
 		return "", err
@@ -251,7 +298,7 @@ func enqueueTurn(ctx turnContext, cfg grokconfig.Config) (string, error) {
 	if err := os.MkdirAll(queueDir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(queueDir, "turn-"+derivedID(ctx.SessionID, ctx.TurnID)+".json")
+	path := queuePath(cfg.StateDir, ctx.SessionID, ctx.TurnID)
 	lock, err := acquireLock(path + ".lock")
 	if err != nil {
 		return "", err
@@ -368,6 +415,18 @@ func ProcessQueue(queuePath string, options RunOptions) error {
 	if err != nil {
 		return err
 	}
+	if grokparse.ClassifyPromptID(queued.TurnID).Suppressed {
+		return cleanupQueue(cfg, queuePath, queued.SessionID, queued.TurnID)
+	}
+	if strings.TrimSpace(queued.TranscriptPath) != "" {
+		hidden, ready, visibilityErr := grokparse.TurnHiddenFromScrollback(queued.TranscriptPath, queued.SessionID, queued.TurnID)
+		if visibilityErr != nil && !errors.Is(visibilityErr, os.ErrNotExist) {
+			return visibilityErr
+		}
+		if ready && hidden {
+			return cleanupQueue(cfg, queuePath, queued.SessionID, queued.TurnID)
+		}
+	}
 	manager := state.Manager{Root: filepath.Join(cfg.StateDir, "uploads"), StaleAfter: 10 * time.Minute}
 	completed, err := manager.Completed(queued.SessionID, queued.TurnID)
 	if err != nil {
@@ -385,6 +444,15 @@ func ProcessQueue(queuePath string, options RunOptions) error {
 			return err
 		}
 		if !ok {
+			if strings.TrimSpace(queued.TranscriptPath) != "" {
+				hidden, ready, visibilityErr := grokparse.TurnHiddenFromScrollback(queued.TranscriptPath, queued.SessionID, queued.TurnID)
+				if visibilityErr != nil && !errors.Is(visibilityErr, os.ErrNotExist) {
+					return visibilityErr
+				}
+				if ready && hidden {
+					return cleanupQueue(cfg, queuePath, queued.SessionID, queued.TurnID)
+				}
+			}
 			// A normal Stop can be blocked by another Hook. Keep the queue until
 			// TurnCompleted is durable or a later explicit terminal arrives.
 			return nil
@@ -417,6 +485,13 @@ func cleanupQueue(cfg grokconfig.Config, queuePath, sessionID, turnID string) er
 		return err
 	}
 	return nil
+}
+
+func cleanupSuppressedTurn(cfg grokconfig.Config, sessionID, turnID string) error {
+	if sessionID == "" || turnID == "" {
+		return nil
+	}
+	return cleanupQueue(cfg, queuePath(cfg.StateDir, sessionID, turnID), sessionID, turnID)
 }
 
 func waitForTurn(queued queuedTurn, cfg grokconfig.Config, skipWait bool) (model.Turn, bool, error) {
@@ -764,6 +839,10 @@ func replaceJSONFile(tempPath, path string) error {
 
 func journalPath(stateDir, sessionID, turnID string) string {
 	return filepath.Join(stateDir, "journal", derivedID("grok-session", sessionID), derivedID("grok-turn", turnID)+".jsonl")
+}
+
+func queuePath(stateDir, sessionID, turnID string) string {
+	return filepath.Join(stateDir, "queue", "turn-"+derivedID(sessionID, turnID)+".json")
 }
 
 func activePath(stateDir, sessionID string) string {

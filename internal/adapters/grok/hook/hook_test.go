@@ -14,6 +14,7 @@ import (
 	"time"
 
 	grokconfig "github.com/GuanceCloud/obs-agent-connector/internal/adapters/grok/config"
+	grokparse "github.com/GuanceCloud/obs-agent-connector/internal/adapters/grok/parse"
 	"github.com/GuanceCloud/obs-agent-connector/internal/core/model"
 	"github.com/GuanceCloud/obs-agent-connector/internal/core/state"
 	"github.com/GuanceCloud/obs-agent-connector/internal/core/transport"
@@ -60,6 +61,77 @@ func TestRecordEventUsesActivePromptForMissingPromptID(t *testing.T) {
 	}
 	if len(events) != 2 || events[1].Payload["promptId"] != "prompt-1" || events[1].Payload["transcriptPath"] != "/synthetic/updates.jsonl" {
 		t.Fatalf("active turn fallback was not persisted: %#v", events)
+	}
+}
+
+func TestSuppressedPromptOriginsAreNotJournaledOrQueued(t *testing.T) {
+	for _, promptID := range []string{
+		"task-completed-task-1",
+		"subagent-completed-agent-1",
+		"workflow-completed-workflow-1",
+		"notifications-notification-1",
+		"goal-summary-goal-1",
+		"goal-classifier-nudge-goal-1",
+	} {
+		t.Run(promptID, func(t *testing.T) {
+			cfg := testConfig(t, "https://example.invalid")
+			payload := map[string]any{
+				"sessionId": "session-hidden", "promptId": promptID,
+				"transcriptPath": "/synthetic/updates.jsonl", "prompt": "runtime wake",
+			}
+			if err := RecordEvent("UserPromptSubmit", payload, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if err := enqueueForEvent("UserPromptSubmit", payload, cfg); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(journalPath(cfg.StateDir, "session-hidden", promptID)); !os.IsNotExist(err) {
+				t.Fatalf("suppressed prompt journal exists: %v", err)
+			}
+			if _, err := os.Stat(queuePath(cfg.StateDir, "session-hidden", promptID)); !os.IsNotExist(err) {
+				t.Fatalf("suppressed prompt queue exists: %v", err)
+			}
+		})
+	}
+}
+
+func TestSuppressedPromptBecomesActiveAndIsolatesMissingPromptTool(t *testing.T) {
+	cfg := testConfig(t, "https://example.invalid")
+	human := map[string]any{
+		"sessionId": "session-isolation", "promptId": "human-prompt",
+		"transcriptPath": "/synthetic/updates.jsonl", "prompt": "human request",
+	}
+	if err := RecordEvent("UserPromptSubmit", human, cfg); err != nil {
+		t.Fatal(err)
+	}
+	synthetic := map[string]any{
+		"sessionId": "session-isolation", "promptId": "task-completed-task-1",
+		"transcriptPath": "/synthetic/updates.jsonl", "prompt": "runtime wake",
+	}
+	if err := RecordEvent("UserPromptSubmit", synthetic, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordEvent("PreToolUse", map[string]any{
+		"sessionId": "session-isolation", "toolUseId": "runtime-tool", "toolName": "read_file",
+	}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	active, err := readActive(activePath(cfg.StateDir, "session-isolation"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active.TurnID != "task-completed-task-1" {
+		t.Fatalf("suppressed prompt did not replace active context: %#v", active)
+	}
+	events, err := readJournal(journalPath(cfg.StateDir, "session-isolation", "human-prompt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Event != "UserPromptSubmit" {
+		t.Fatalf("runtime tool leaked into human journal: %#v", events)
+	}
+	if _, err := os.Stat(journalPath(cfg.StateDir, "session-isolation", "task-completed-task-1")); !os.IsNotExist(err) {
+		t.Fatalf("suppressed prompt journal exists: %v", err)
 	}
 }
 
@@ -209,6 +281,104 @@ func TestProcessQueueWaitsForTurnCompletedThenUploads(t *testing.T) {
 	defer mu.Unlock()
 	if requests["/v1/traces"] != 1 || requests["/v1/metrics"] != 1 {
 		t.Fatalf("unexpected upload requests: %#v", requests)
+	}
+}
+
+func TestProcessQueueCleansSuppressedStaleStateWithoutUpload(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests++
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	cfg := testConfig(t, server.URL)
+	sessionID := "session-stale-hidden"
+	turnID := "task-completed-task-stale"
+	journal := journalPath(cfg.StateDir, sessionID, turnID)
+	if err := appendJournal(journal, grokparse.JournalEvent{
+		Event: "UserPromptSubmit", RecordedNano: 100,
+		Payload: map[string]any{"sessionId": sessionID, "promptId": turnID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := queuePath(cfg.StateDir, sessionID, turnID)
+	if err := writeQueue(path, queuedTurn{
+		SessionID: sessionID, TurnID: turnID,
+		Turn: &model.Turn{SessionID: sessionID, TurnID: turnID, FinalStatus: model.FinalStatusCompleted},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ProcessQueue(path, RunOptions{Config: &cfg, HTTPClient: server.Client(), SkipWait: true}); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 0 {
+		t.Fatalf("suppressed stale queue uploaded %d requests", requests)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("suppressed stale queue remains: %v", err)
+	}
+	if _, err := os.Stat(journal); !os.IsNotExist(err) {
+		t.Fatalf("suppressed stale journal remains: %v", err)
+	}
+}
+
+func TestProcessQueueCleansStructuredHiddenStateWithoutUpload(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests++
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	cfg := testConfig(t, server.URL)
+	sessionID := "session-structured-hidden"
+	turnID := "future-runtime-origin-1"
+	transcript := filepath.Join(t.TempDir(), "updates.jsonl")
+	writeTranscript(t, transcript, []map[string]any{
+		{
+			"timestamp": 100,
+			"method":    "session/update",
+			"params": map[string]any{
+				"sessionId": sessionID,
+				"update": map[string]any{
+					"sessionUpdate": "user_message_chunk",
+					"content":       map[string]any{"type": "text", "text": "future runtime wake"},
+					"_meta":         map[string]any{"promptIndex": 1, "hideFromScrollback": true},
+				},
+			},
+		},
+		xaiUpdate(101, sessionID, map[string]any{
+			"sessionUpdate": "turn_completed", "prompt_id": turnID,
+			"stop_reason": "end_turn", "agent_result": "internal result",
+		}),
+	})
+	journal := journalPath(cfg.StateDir, sessionID, turnID)
+	if err := appendJournal(journal, grokparse.JournalEvent{
+		Event: "UserPromptSubmit", RecordedNano: 100,
+		Payload: map[string]any{"sessionId": sessionID, "promptId": turnID, "prompt": "future runtime wake"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := queuePath(cfg.StateDir, sessionID, turnID)
+	if err := writeQueue(path, queuedTurn{
+		SessionID: sessionID, TurnID: turnID, TranscriptPath: transcript,
+		Events: []grokparse.JournalEvent{{
+			Event: "UserPromptSubmit", RecordedNano: 100,
+			Payload: map[string]any{"sessionId": sessionID, "promptId": turnID, "prompt": "future runtime wake"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ProcessQueue(path, RunOptions{Config: &cfg, HTTPClient: server.Client(), SkipWait: true}); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 0 {
+		t.Fatalf("structured hidden queue uploaded %d requests", requests)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("structured hidden queue remains: %v", err)
+	}
+	if _, err := os.Stat(journal); !os.IsNotExist(err) {
+		t.Fatalf("structured hidden journal remains: %v", err)
 	}
 }
 
@@ -404,6 +574,49 @@ func TestNewPromptRecoversEarlierDurableTurn(t *testing.T) {
 	}
 	if queued.TurnID != "prompt-old" || queued.TranscriptPath != transcript {
 		t.Fatalf("unexpected recovered queue: %#v", queued)
+	}
+}
+
+func TestRecoveryCleansStructuredHiddenTurnWithoutQueue(t *testing.T) {
+	cfg := testConfig(t, "https://example.invalid")
+	sessionID := "session-recover-hidden"
+	turnID := "future-runtime-origin-recover"
+	transcript := filepath.Join(t.TempDir(), "updates.jsonl")
+	writeTranscript(t, transcript, []map[string]any{
+		{
+			"timestamp": 300,
+			"method":    "session/update",
+			"params": map[string]any{
+				"sessionId": sessionID,
+				"update": map[string]any{
+					"sessionUpdate": "user_message_chunk",
+					"content": map[string]any{
+						"type": "text", "text": "future runtime wake",
+						"_meta": map[string]any{"promptIndex": 1, "hideFromScrollback": true},
+					},
+				},
+			},
+		},
+		xaiUpdate(301, sessionID, map[string]any{
+			"sessionUpdate": "turn_completed", "prompt_id": turnID,
+			"stop_reason": "end_turn", "agent_result": "internal result",
+		}),
+	})
+	journal := journalPath(cfg.StateDir, sessionID, turnID)
+	if err := appendJournal(journal, grokparse.JournalEvent{
+		Event: "UserPromptSubmit", RecordedNano: 300,
+		Payload: map[string]any{"sessionId": sessionID, "promptId": turnID, "prompt": "future runtime wake"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueueRecoveredTurns(turnContext{SessionID: sessionID, TranscriptPath: transcript}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(journal); !os.IsNotExist(err) {
+		t.Fatalf("structured hidden recovery journal remains: %v", err)
+	}
+	if _, err := os.Stat(queuePath(cfg.StateDir, sessionID, turnID)); !os.IsNotExist(err) {
+		t.Fatalf("structured hidden recovery created a queue: %v", err)
 	}
 }
 
