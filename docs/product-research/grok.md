@@ -122,6 +122,8 @@ worker           -> exact transcript + matching TurnCompleted
 
 After call boundaries are established, `chat_history.jsonl` enriches each call with the real incremental input and assistant output. Tool-call arguments are parsed before recursive secret redaction, and all content still follows `captureContent` and `maxChars`. The persisted assistant records contain model identity and content but no per-call token usage.
 
+Grok exposes assistant content and terminal point timestamps but no separate assistant rendering start/end lifecycle. The connector therefore represents each point-in-time assistant output with a display-safe one-millisecond window inside the turn and marks it with `gtrace.timing.estimated=true`. This window is presentation metadata, not measured rendering or model latency.
+
 When every identified call lacks exact usage, the persisted aggregate is complete, and `modelCalls` exactly matches the call count, the connector apportions each token category across those calls. Input/cache categories use the relative captured input size, output/reasoning categories use the relative captured output size, and call duration is the fallback weight when content capture is disabled or unavailable. Largest-remainder apportionment keeps every category sum exactly equal to the root aggregate. Each affected LLM span carries `gtrace.usage.estimated=true` and `gtrace.usage.source=grok_turn_completed_proportional`; exact response usage always takes precedence, and mixed or count-mismatched evidence is not modified. The root also exposes `usage_input_tokens` and `usage_output_tokens` compatibility aliases while retaining the canonical exact GenAI attributes as the semantic source of truth.
 
 ## 7. Tool, Skill, and Subagent Data

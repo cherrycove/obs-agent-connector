@@ -106,7 +106,7 @@ func enrichAssistantOutputs(turn *model.Turn, calls []chatHistoryCall) {
 			continue
 		}
 		call := turn.LLMCalls[index]
-		start, end := childWindow(call.EndUnixNano, call.EndUnixNano+1, turn.StartUnixNano, turn.EndUnixNano)
+		start, end := assistantWindow(call.EndUnixNano, turn.StartUnixNano, turn.EndUnixNano)
 		status := call.Status
 		if status == "" {
 			status = "ok"
@@ -124,8 +124,9 @@ func enrichAssistantOutputs(turn *model.Turn, calls []chatHistoryCall) {
 			ErrorType:      call.ErrorType,
 			Reason:         call.Reason,
 			ExtraAttributes: map[string]any{
-				"content.source": "grok_chat_history",
-				"timing.source":  "grok_llm_boundary",
+				"content.source":          "grok_chat_history",
+				"timing.source":           "grok_llm_boundary",
+				"gtrace.timing.estimated": true,
 			},
 		}})
 	}

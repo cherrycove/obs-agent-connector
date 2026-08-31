@@ -19,6 +19,8 @@ import (
 	"github.com/GuanceCloud/obs-agent-connector/internal/core/privacy"
 )
 
+const assistantDisplayWindow = int64(time.Millisecond)
+
 type JournalEvent struct {
 	Event        string         `json:"event"`
 	RecordedNano int64          `json:"recorded_unix_nano"`
@@ -667,13 +669,13 @@ func normalize(
 	}
 
 	if output != "" && terminalKind != "stopfailure" {
-		assistantStart := end - 1
-		if assistantStart < start {
-			assistantStart = start
-		}
+		assistantStart, assistantEnd := assistantWindow(end, start, end)
 		assistant := model.AssistantOutput{
-			StartUnixNano: assistantStart, EndUnixNano: end, OutputKind: "text", Status: "ok",
-			ExtraAttributes: map[string]any{"timing.source": "grok_turn_completed"},
+			StartUnixNano: assistantStart, EndUnixNano: assistantEnd, OutputKind: "text", Status: "ok",
+			ExtraAttributes: map[string]any{
+				"timing.source":           "grok_turn_completed",
+				"gtrace.timing.estimated": true,
+			},
 		}
 		if options.CaptureContent != "none" {
 			assistant.OutputMessages = turn.OutputMessages
@@ -1434,6 +1436,20 @@ func childWindow(start, end, parentStart, parentEnd int64) (int64, int64) {
 		}
 	}
 	return start, end
+}
+
+// assistantWindow gives point-in-time Grok assistant output evidence a
+// display-safe one millisecond span without extending the enclosing turn.
+// Grok does not expose a separate assistant rendering start/end lifecycle, so
+// callers must mark the resulting timing as estimated.
+func assistantWindow(anchor, parentStart, parentEnd int64) (int64, int64) {
+	start := anchor
+	end := anchor + assistantDisplayWindow
+	if end > parentEnd {
+		end = parentEnd
+		start = end - assistantDisplayWindow
+	}
+	return childWindow(start, end, parentStart, parentEnd)
 }
 
 func recordNano(record transcriptRecord) int64 {
