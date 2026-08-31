@@ -672,10 +672,7 @@ func normalize(
 		assistantStart, assistantEnd := assistantWindow(end, start, end)
 		assistant := model.AssistantOutput{
 			StartUnixNano: assistantStart, EndUnixNano: assistantEnd, OutputKind: "text", Status: "ok",
-			ExtraAttributes: map[string]any{
-				"timing.source":           "grok_turn_completed",
-				"gtrace.timing.estimated": true,
-			},
+			ExtraAttributes: map[string]any{"timing.source": "grok_turn_completed"},
 		}
 		if options.CaptureContent != "none" {
 			assistant.OutputMessages = turn.OutputMessages
@@ -1440,8 +1437,7 @@ func childWindow(start, end, parentStart, parentEnd int64) (int64, int64) {
 
 // assistantWindow gives point-in-time Grok assistant output evidence a
 // display-safe one millisecond span without extending the enclosing turn.
-// Grok does not expose a separate assistant rendering start/end lifecycle, so
-// callers must mark the resulting timing as estimated.
+// Grok does not expose a separate assistant rendering start/end lifecycle.
 func assistantWindow(anchor, parentStart, parentEnd int64) (int64, int64) {
 	start := anchor
 	end := anchor + assistantDisplayWindow

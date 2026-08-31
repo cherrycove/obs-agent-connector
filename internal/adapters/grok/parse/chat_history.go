@@ -124,9 +124,8 @@ func enrichAssistantOutputs(turn *model.Turn, calls []chatHistoryCall) {
 			ErrorType:      call.ErrorType,
 			Reason:         call.Reason,
 			ExtraAttributes: map[string]any{
-				"content.source":          "grok_chat_history",
-				"timing.source":           "grok_llm_boundary",
-				"gtrace.timing.estimated": true,
+				"content.source": "grok_chat_history",
+				"timing.source":  "grok_llm_boundary",
 			},
 		}})
 	}

@@ -725,7 +725,7 @@ func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
 	if assistant.OutputPreview != "Synthetic answer." || assistant.ResponseModel != "grok-4.6" ||
 		assistant.EndUnixNano-assistant.StartUnixNano != assistantDisplayWindow ||
 		assistant.ExtraAttributes["content.source"] != "grok_chat_history" || assistant.ExtraAttributes["timing.source"] != "grok_llm_boundary" ||
-		assistant.ExtraAttributes["gtrace.timing.estimated"] != true {
+		assistant.ExtraAttributes["gtrace.timing.estimated"] != nil {
 		t.Fatalf("final visible assistant was not enriched from its LLM response: %#v", assistant)
 	}
 	encodedMessages, err := json.Marshal(turn.LLMCalls)
@@ -832,12 +832,12 @@ func TestReadTurnEmitsIntermediateVisibleChatHistoryAssistant(t *testing.T) {
 	first := turn.AssistantOutputs[0]
 	if first.OutputPreview != "I will check the synthetic sources." || first.ResponseModel != "grok-4.6" ||
 		first.StartUnixNano != turn.LLMCalls[0].EndUnixNano || first.EndUnixNano != first.StartUnixNano+assistantDisplayWindow ||
-		first.ExtraAttributes["gtrace.timing.estimated"] != true {
+		first.ExtraAttributes["gtrace.timing.estimated"] != nil {
 		t.Fatalf("intermediate visible assistant lacked matching content, model, or timing: %#v", first)
 	}
 	final := turn.AssistantOutputs[1]
 	if final.OutputPreview != "Synthetic answer." || final.ResponseModel != "grok-4.6" ||
-		final.EndUnixNano-final.StartUnixNano != assistantDisplayWindow || final.ExtraAttributes["gtrace.timing.estimated"] != true {
+		final.EndUnixNano-final.StartUnixNano != assistantDisplayWindow || final.ExtraAttributes["gtrace.timing.estimated"] != nil {
 		t.Fatalf("terminal assistant was duplicated or lost its persisted evidence: %#v", turn.AssistantOutputs)
 	}
 
