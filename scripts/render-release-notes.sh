@@ -25,6 +25,17 @@ ${line}" ;;
 }
 
 previous_tag() {
+  case "${VERSION}" in
+    *-*) ;;
+    *)
+      git -C "${ROOT_DIR}" tag --sort=version:refname \
+        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+        | grep -Fxv "${VERSION}" \
+        | tail -n 1
+      return
+      ;;
+  esac
+
   git -C "${ROOT_DIR}" tag --sort=version:refname \
     | grep -Fxv "${VERSION}" \
     | tail -n 1
@@ -38,6 +49,21 @@ render_changes() {
     changed_files="$(git -C "${ROOT_DIR}" diff --name-only "${previous}..${VERSION}")"
     kiro_release=false
     dcode_release=false
+    grok_release=false
+
+    if printf '%s\n' "${changed_files}" | grep -Eq '(^|/)grok([^/]*|/.*)$'; then
+      if git -C "${ROOT_DIR}" cat-file -e "${previous}:internal/adapters/grok" 2>/dev/null; then
+        append_line "- Improved Grok Build telemetry, including Windows Hook execution, transcript replay, per-LLM token attribution, duplicate/background turn suppression, and display-safe assistant spans."
+      else
+        append_line "- Added built-in Grok Build 1.0.5+ discovery, cross-platform Hook lifecycle management, durable transcript replay, and OTLP traces and metrics for LLM, tool, and assistant operations."
+        append_line "- Added Grok collection reliability and compatibility fixes, including Windows PowerShell/cmd Hook execution, per-LLM token attribution, duplicate/background turn suppression, and display-safe assistant spans."
+      fi
+      grok_release=true
+    fi
+
+    if printf '%s\n' "${changed_files}" | grep -Eq '^internal/agent/dsh(_test)?\.go$'; then
+      append_line "- Fixed dsh plugin installation by requiring an available dsh CLI and detecting cached CLI installations."
+    fi
 
     if printf '%s\n' "${changed_files}" | grep -Eq '(^|/)dcode([^/]*|/.*)$'; then
       if git -C "${ROOT_DIR}" cat-file -e "${previous}:internal/adapters/dcode" 2>/dev/null; then
@@ -63,11 +89,11 @@ render_changes() {
       kiro_release=true
     fi
 
-    if [ "${kiro_release}" != "true" ] && [ "${dcode_release}" != "true" ] && printf '%s\n' "${changed_files}" | grep -Eq '^(cmd/|internal/app/|internal/agent/|main\.go|main_test\.go)'; then
+    if [ "${kiro_release}" != "true" ] && [ "${dcode_release}" != "true" ] && [ "${grok_release}" != "true" ] && printf '%s\n' "${changed_files}" | grep -Eq '^(cmd/|internal/app/|internal/agent/|main\.go|main_test\.go)'; then
       append_line "- Reorganized the CLI into cmd/ and internal/ packages, with separate app and Agent modules."
     fi
 
-    if [ "${kiro_release}" != "true" ] && [ "${dcode_release}" != "true" ] && printf '%s\n' "${changed_files}" | grep -Eq '^(internal/app/command_discover\.go|internal/app/command_install\.go|internal/app/command_update\.go|internal/app/installer\.go|internal/agent/(definition|registry|codex|openclaw|qoder)\.go)'; then
+    if [ "${kiro_release}" != "true" ] && [ "${dcode_release}" != "true" ] && [ "${grok_release}" != "true" ] && printf '%s\n' "${changed_files}" | grep -Eq '^(internal/app/command_discover\.go|internal/app/command_install\.go|internal/app/command_update\.go|internal/app/installer\.go|internal/agent/(definition|registry|codex|openclaw|qoder)\.go)'; then
       append_line "- Improved installation and update flows, including Windows-specific plugin installer routing for supported Agents."
     fi
 
