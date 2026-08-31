@@ -106,7 +106,7 @@ func enrichAssistantOutputs(turn *model.Turn, calls []chatHistoryCall) {
 			continue
 		}
 		call := turn.LLMCalls[index]
-		start, end := childWindow(call.EndUnixNano, call.EndUnixNano+1, turn.StartUnixNano, turn.EndUnixNano)
+		start, end := assistantWindow(call.EndUnixNano, turn.StartUnixNano, turn.EndUnixNano)
 		status := call.Status
 		if status == "" {
 			status = "ok"

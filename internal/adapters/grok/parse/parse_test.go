@@ -723,7 +723,9 @@ func TestReadTurnBuildsCallsFromVersionedSessionEvents(t *testing.T) {
 	}
 	assistant := turn.AssistantOutputs[0]
 	if assistant.OutputPreview != "Synthetic answer." || assistant.ResponseModel != "grok-4.6" ||
-		assistant.ExtraAttributes["content.source"] != "grok_chat_history" || assistant.ExtraAttributes["timing.source"] != "grok_llm_boundary" {
+		assistant.EndUnixNano-assistant.StartUnixNano != assistantDisplayWindow ||
+		assistant.ExtraAttributes["content.source"] != "grok_chat_history" || assistant.ExtraAttributes["timing.source"] != "grok_llm_boundary" ||
+		assistant.ExtraAttributes["gtrace.timing.estimated"] != nil {
 		t.Fatalf("final visible assistant was not enriched from its LLM response: %#v", assistant)
 	}
 	encodedMessages, err := json.Marshal(turn.LLMCalls)
@@ -829,11 +831,13 @@ func TestReadTurnEmitsIntermediateVisibleChatHistoryAssistant(t *testing.T) {
 	}
 	first := turn.AssistantOutputs[0]
 	if first.OutputPreview != "I will check the synthetic sources." || first.ResponseModel != "grok-4.6" ||
-		first.StartUnixNano != turn.LLMCalls[0].EndUnixNano || first.EndUnixNano != first.StartUnixNano+1 {
+		first.StartUnixNano != turn.LLMCalls[0].EndUnixNano || first.EndUnixNano != first.StartUnixNano+assistantDisplayWindow ||
+		first.ExtraAttributes["gtrace.timing.estimated"] != nil {
 		t.Fatalf("intermediate visible assistant lacked matching content, model, or timing: %#v", first)
 	}
 	final := turn.AssistantOutputs[1]
-	if final.OutputPreview != "Synthetic answer." || final.ResponseModel != "grok-4.6" {
+	if final.OutputPreview != "Synthetic answer." || final.ResponseModel != "grok-4.6" ||
+		final.EndUnixNano-final.StartUnixNano != assistantDisplayWindow || final.ExtraAttributes["gtrace.timing.estimated"] != nil {
 		t.Fatalf("terminal assistant was duplicated or lost its persisted evidence: %#v", turn.AssistantOutputs)
 	}
 
@@ -883,6 +887,27 @@ func TestEnrichAssistantOutputsDoesNotOverwriteDifferentTerminalOutput(t *testin
 	}
 	if turn.AssistantOutputs[0].OutputPreview != "Intermediate note." || turn.AssistantOutputs[1].OutputPreview != "Terminal output supplied by the completion event." {
 		t.Fatalf("terminal assistant was overwritten by an unrelated intermediate response: %#v", turn.AssistantOutputs)
+	}
+}
+
+func TestAssistantWindowUsesDisplaySafeMillisecondWithinTurn(t *testing.T) {
+	parentStart := int64(time.Second)
+	parentEnd := 3 * int64(time.Second)
+
+	start, end := assistantWindow(2*int64(time.Second), parentStart, parentEnd)
+	if start != 2*int64(time.Second) || end-start != assistantDisplayWindow {
+		t.Fatalf("mid-turn assistant window = [%d, %d], want one millisecond at the anchor", start, end)
+	}
+
+	start, end = assistantWindow(parentEnd, parentStart, parentEnd)
+	if end != parentEnd || end-start != assistantDisplayWindow {
+		t.Fatalf("terminal assistant window = [%d, %d], want one millisecond ending at the turn boundary", start, end)
+	}
+
+	shortEnd := parentStart + int64(500*time.Microsecond)
+	start, end = assistantWindow(shortEnd, parentStart, shortEnd)
+	if start < parentStart || end > shortEnd || end <= start {
+		t.Fatalf("short-turn assistant window escaped its parent: parent=[%d, %d] child=[%d, %d]", parentStart, shortEnd, start, end)
 	}
 }
 
